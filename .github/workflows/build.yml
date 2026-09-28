@@ -1,0 +1,106 @@
+name: Build Windows Installer
+
+# ============================================================
+# This workflow builds the FanController installer (.exe)
+# automatically on GitHub's servers. No need to install
+# Python, Inno Setup, or anything else on your PC.
+#
+# After this runs, the installer will be available as a
+# downloadable artifact on the Actions page.
+# ============================================================
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:    # manual trigger from Actions tab
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        working-directory: pc_app
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pywin32
+
+      - name: Download LibreHardwareMonitorLib.dll
+        working-directory: pc_app
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $url = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.3/LibreHardwareMonitor-Lib-net462.zip'
+          Invoke-WebRequest -Uri $url -OutFile lhm.zip
+          Expand-Archive -Path lhm.zip -DestinationPath lhm_extracted -Force
+          $dll = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'LibreHardwareMonitorLib.dll' | Select-Object -First 1
+          if ($dll) { Copy-Item $dll.FullName -Destination '.' -Force }
+          $cfg = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'LibreHardwareMonitorLib.dll.config' | Select-Object -First 1
+          if ($cfg) { Copy-Item $cfg.FullName -Destination '.' -Force }
+          $hid = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'HidSharp.dll' | Select-Object -First 1
+          if ($hid) { Copy-Item $hid.FullName -Destination '.' -Force }
+          Remove-Item lhm.zip -Force
+          Remove-Item lhm_extracted -Recurse -Force
+
+      - name: Generate icon
+        working-directory: pc_app
+        run: python icon_generator.py
+
+      - name: Build executable with PyInstaller
+        working-directory: pc_app
+        run: |
+          python -m PyInstaller fan_controller.spec --noconfirm --clean
+          dir dist\FanController
+
+      - name: Copy extra files to dist
+        working-directory: pc_app
+        shell: pwsh
+        run: |
+          foreach ($f in @('LibreHardwareMonitorLib.dll','LibreHardwareMonitorLib.dll.config','HidSharp.dll','GameMode_ON.bat','GameMode_OFF.bat','icon.ico')) {
+            if (Test-Path $f) { Copy-Item $f -Destination 'dist\FanController\' -Force }
+          }
+          if (Test-Path 'LibreHardwareMonitorLib.resources') {
+            Copy-Item 'LibreHardwareMonitorLib.resources' -Destination 'dist\FanController\' -Recurse -Force
+          }
+
+      - name: Compile installer with Inno Setup
+        working-directory: pc_app
+        run: |
+          # Inno Setup 6 is pre-installed on windows-latest runners
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          dir dist\*.exe
+
+      - name: Upload installer as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FanController-Setup-v1.0.0
+          path: pc_app/dist/FanController-Setup-v*.exe
+          retention-days: 90
+
+      - name: Upload portable folder as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FanController-Portable
+          path: pc_app/dist/FanController/
+          retention-days: 90
+
+      - name: Release on tag push
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pc_app/dist/FanController-Setup-v*.exe
+          name: FanController ${{ github.ref_name }}
+          draft: false
+          prerelease: false
