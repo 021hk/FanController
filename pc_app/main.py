@@ -38,7 +38,7 @@ def ensure_admin():
 def main():
     ensure_admin()
 
-    from config import Config
+    from config import Config, CONFIG_FILE
     from hardware_monitor import HardwareMonitor
     from esp_client import ESPClient, ConnState
     from profiles import push_all_curves, get_profile
@@ -46,7 +46,7 @@ def main():
     from hotkey import HotkeyManager
 
     config = Config.load()
-    log.info(f"Config loaded from {Config.CONFIG_FILE}")
+    log.info(f"Config loaded from {CONFIG_FILE}")
 
     monitor = HardwareMonitor(
         cpu_sensor=config.cpu_sensor,
