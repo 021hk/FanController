@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QProgressBar, QSlider, QSpinBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QGroupBox, QFrame, QSizePolicy, QApplication, QGridLayout
+    QGroupBox, QFrame, QSizePolicy, QApplication, QGridLayout, QDialog
 )
 
 from config import Config, PROFILE_NAMES
@@ -565,14 +565,100 @@ class FanCard(QFrame):
 
 
 # ============================================================
-# Mini Floating Widget (compact mode)
+# Mini Spinning Fan Circle Widget (CPU and GPU)
+# ============================================================
+class MiniFanCircle(QWidget):
+    """A single circular animated fan blade indicator for mini mode."""
+
+    def __init__(self, label: str, color: str, parent=None, size: int = 70):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._rotation = 0.0
+        self._percent = 0
+        self._temp = 0
+        self._label = label
+        self._color = QColor(color)
+        self._last_tick = time.time()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(30)  # ~33 FPS
+
+    def set_percent(self, percent: int):
+        self._percent = max(0, min(100, int(percent)))
+
+    def set_temp(self, temp: float):
+        self._temp = temp
+
+    def _tick(self):
+        # Spin speed proportional to percent (0 = stopped, 100 = ~720 deg/s)
+        deg_per_sec = self._percent * 7.2
+        now = time.time()
+        dt = now - self._last_tick
+        self._last_tick = now
+        self._rotation = (self._rotation + deg_per_sec * dt) % 360
+        self.update()
+
+    def paintEvent(self, _evt):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        radius = min(w, h) / 2 - 4
+
+        # Background circle
+        bg = QRadialGradient(cx, cy, radius)
+        bg.setColorAt(0, QColor(40, 40, 40))
+        bg.setColorAt(1, QColor(20, 20, 20))
+        p.setBrush(QBrush(bg))
+        p.setPen(QPen(self._color.darker(150), 2))
+        p.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        # Glow if active
+        if self._percent > 0:
+            glow = QColor(self._color)
+            glow.setAlpha(int(30 + self._percent * 1.5))
+            p.setBrush(QBrush(glow))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(cx, cy), radius * 0.95, radius * 0.95)
+
+        # Rotating fan blades
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(self._rotation)
+
+        blade_color = QColor(self._color)
+        blade_color.setAlpha(140)
+        p.setBrush(QBrush(blade_color))
+        p.setPen(QPen(self._color, 1.5))
+
+        r = radius * 0.85
+        for i in range(3):
+            p.save()
+            p.rotate(i * 120)
+            path = QPainterPath()
+            path.moveTo(0, 0)
+            path.cubicTo(-r * 0.4, -r * 0.6,  -r * 0.2, -r * 0.95,  0, -r * 0.95)
+            path.cubicTo(r * 0.4, -r * 0.6,   r * 0.05, -r * 0.2,   0, 0)
+            p.drawPath(path)
+            p.restore()
+
+        # Center hub
+        p.setBrush(QBrush(QColor(243, 243, 243)))
+        p.setPen(QPen(self._color, 2))
+        p.drawEllipse(QPointF(0, 0), 8, 8)
+        p.restore()
+
+        # Label below
+        p.setPen(self._color)
+        p.setFont(QFont("Tahoma", 8, QFont.Weight.Bold))
+        p.drawText(QRectF(0, h - 14, w, 14), Qt.AlignmentFlag.AlignCenter, self._label)
+
+
+# ============================================================
+# Mini Floating Widget (compact mode) - 2 spinning circles
 # ============================================================
 class MiniWidget(QWidget):
-    """Compact floating widget shown when user clicks 'minimize'.
-
-    This is a separate top-level window (not a child of main window),
-    so it can float on the desktop independently.
-    """
+    """Compact floating widget with 2 spinning fan circles (CPU + GPU)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -582,10 +668,9 @@ class MiniWidget(QWidget):
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.Tool  # don't show in taskbar
         )
-        # Solid background (no transparency - prevents rendering issues)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-        self.setFixedSize(240, 260)
+        self.setFixedSize(280, 320)
 
         # Apply dark theme styles
         self.setStyleSheet(f"""
@@ -640,26 +725,55 @@ class MiniWidget(QWidget):
         """)
         layout.addWidget(self.lbl_conn)
 
-        # Compact fan stats (just CPU + GPU)
-        self.cpu_temp_lbl = QLabel("🌡️ CPU: --°C  💨 --%")
-        self.cpu_temp_lbl.setStyleSheet("""
-            font-size: 12px;
-            padding: 8px;
-            background: rgba(0,210,255,0.06);
-            border-radius: 8px;
-            color: white;
-        """)
-        layout.addWidget(self.cpu_temp_lbl)
+        # Two spinning fan circles side by side
+        circles_layout = QHBoxLayout()
+        circles_layout.setSpacing(8)
 
-        self.gpu_temp_lbl = QLabel("🌡️ GPU: --°C  💨 --%")
-        self.gpu_temp_lbl.setStyleSheet("""
-            font-size: 12px;
-            padding: 8px;
-            background: rgba(255,82,82,0.06);
-            border-radius: 8px;
-            color: white;
+        # CPU fan circle (cyan)
+        cpu_box = QVBoxLayout()
+        cpu_box.setSpacing(2)
+        self.cpu_circle = MiniFanCircle("CPU", PRIMARY_COLOR, size=80)
+        cpu_circle_layout = QHBoxLayout()
+        cpu_circle_layout.addStretch()
+        cpu_circle_layout.addWidget(self.cpu_circle)
+        cpu_circle_layout.addStretch()
+        cpu_box.addLayout(cpu_circle_layout)
+        self.cpu_info = QLabel("--°C  --%")
+        self.cpu_info.setStyleSheet(f"""
+            color: {PRIMARY_COLOR};
+            font-size: 11px;
+            font-weight: bold;
+            padding: 2px;
+            background: rgba(0,210,255,0.08);
+            border-radius: 6px;
         """)
-        layout.addWidget(self.gpu_temp_lbl)
+        self.cpu_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cpu_box.addWidget(self.cpu_info)
+        circles_layout.addLayout(cpu_box)
+
+        # GPU fan circle (red)
+        gpu_box = QVBoxLayout()
+        gpu_box.setSpacing(2)
+        self.gpu_circle = MiniFanCircle("GPU", "#ff5252", size=80)
+        gpu_circle_layout = QHBoxLayout()
+        gpu_circle_layout.addStretch()
+        gpu_circle_layout.addWidget(self.gpu_circle)
+        gpu_circle_layout.addStretch()
+        gpu_box.addLayout(gpu_circle_layout)
+        self.gpu_info = QLabel("--°C  --%")
+        self.gpu_info.setStyleSheet("""
+            color: #ff5252;
+            font-size: 11px;
+            font-weight: bold;
+            padding: 2px;
+            background: rgba(255,82,82,0.08);
+            border-radius: 6px;
+        """)
+        self.gpu_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gpu_box.addWidget(self.gpu_info)
+        circles_layout.addLayout(gpu_box)
+
+        layout.addLayout(circles_layout)
 
         layout.addStretch()
 
@@ -694,7 +808,6 @@ class MiniWidget(QWidget):
     # ---------- Drag the floating widget ----------
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Only start drag if click is on background (not on a button)
             widget = self.childAt(event.position().toPoint())
             if widget is None:
                 self._drag_offset = event.globalPosition().toPoint() - self.pos()
@@ -728,8 +841,15 @@ class MiniWidget(QWidget):
         except (TypeError, ValueError):
             gpu_pct = 0
 
-        self.cpu_temp_lbl.setText(f"🌡️ CPU: {cpu_temp:.0f}°C  💨 {cpu_pct}%")
-        self.gpu_temp_lbl.setText(f"🌡️ GPU: {gpu_temp:.0f}°C  💨 {gpu_pct}%")
+        # Update spinning circles
+        self.cpu_circle.set_percent(cpu_pct)
+        self.cpu_circle.set_temp(cpu_temp)
+        self.gpu_circle.set_percent(gpu_pct)
+        self.gpu_circle.set_temp(gpu_temp)
+
+        # Update info labels
+        self.cpu_info.setText(f"{cpu_temp:.0f}°C  {cpu_pct}%")
+        self.gpu_info.setText(f"{gpu_temp:.0f}°C  {gpu_pct}%")
         self.lbl_conn.setText(conn if conn else "● ...")
         self.btn_game.setChecked(bool(game))
 
@@ -738,11 +858,9 @@ class MiniWidget(QWidget):
         from PyQt6.QtGui import QPainterPath, QBrush, QColor, QPainter
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Draw rounded rect background
         path = QPainterPath()
         path.addRoundedRect(0, 0, self.width(), self.height(), 18, 18)
         p.fillPath(path, QBrush(QColor(CARD_BG)))
-        # Cyan border
         from PyQt6.QtGui import QPen
         p.setPen(QPen(QColor(0, 210, 255, 100), 1))
         p.drawPath(path)
@@ -812,6 +930,16 @@ class FanControllerGUI(QMainWindow):
         # Window controls
         ctrl_layout = QHBoxLayout()
         ctrl_layout.setSpacing(6)
+
+        # Settings button (gear icon)
+        self.btn_settings = QPushButton("⚙")
+        self.btn_settings.setObjectName("MiniButton")
+        self.btn_settings.setFixedSize(32, 32)
+        self.btn_settings.setToolTip("تنظیمات منحنی دما-فن")
+        self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_settings.clicked.connect(self._open_settings)
+        ctrl_layout.addWidget(self.btn_settings)
+
         self.btn_mini = QPushButton("🗕")
         self.btn_mini.setObjectName("MiniButton")
         self.btn_mini.setFixedSize(32, 32)
@@ -855,23 +983,19 @@ class FanControllerGUI(QMainWindow):
         self.btn_game.clicked.connect(self._toggle_game_mode)
         root.addWidget(self.btn_game)
 
-        # ---------- Fan cards grid (4 fans) ----------
+        # ---------- Fan cards grid (2 fans: CPU + GPU) ----------
         cards_frame = QFrame()
         cards_layout = QGridLayout(cards_frame)
         cards_layout.setSpacing(12)
 
-        # CPU + GPU + 2 case fans
+        # Only CPU + GPU fans
         self.cards = {}
         self.cards["cpu"] = FanCard("CPU Fan")
         self.cards["gpu"] = FanCard("GPU Fan")
-        self.cards["case1"] = FanCard("Case Fan 1")
-        self.cards["case2"] = FanCard("Case Fan 2")
 
-        # CPU + GPU drive ESP directly; case fans mirror CPU/GPU
+        # Side by side
         cards_layout.addWidget(self.cards["cpu"], 0, 0)
         cards_layout.addWidget(self.cards["gpu"], 0, 1)
-        cards_layout.addWidget(self.cards["case1"], 1, 0)
-        cards_layout.addWidget(self.cards["case2"], 1, 1)
         root.addWidget(cards_frame)
 
         # Connect sliders
@@ -893,6 +1017,26 @@ class FanControllerGUI(QMainWindow):
         root.addWidget(self.chart, stretch=1)
 
     # ---------- Mini / Full mode ----------
+    def _open_settings(self):
+        """Open the settings dialog to edit fan curves."""
+        try:
+            from settings_dialog import SettingsDialog
+            dlg = SettingsDialog(self.config, parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                curves = dlg.get_curves()
+                if curves:
+                    # Send new curves to ESP
+                    if "cpu" in curves:
+                        temps, pcts = curves["cpu"]
+                        self.client.set_curve("cpu", temps, pcts)
+                        log.info(f"CPU curve applied: {len(temps)} points")
+                    if "gpu" in curves:
+                        temps, pcts = curves["gpu"]
+                        self.client.set_curve("gpu", temps, pcts)
+                        log.info(f"GPU curve applied: {len(temps)} points")
+        except Exception as e:
+            log.exception(f"Settings dialog failed: {e}")
+
     def _show_mini(self):
         """Switch to compact floating mode."""
         try:
@@ -996,9 +1140,6 @@ class FanControllerGUI(QMainWindow):
         # Update cards
         self.cards["cpu"].update_status(cpu_temp, cpu_pct, cpu_mode)
         self.cards["gpu"].update_status(gpu_temp, gpu_pct, gpu_mode)
-        # Case fans mirror CPU/GPU (visual only)
-        self.cards["case1"].update_status(cpu_temp, cpu_pct, cpu_mode)
-        self.cards["case2"].update_status(gpu_temp, gpu_pct, gpu_mode)
 
         # Chart
         self.chart.push(cpu_temp, gpu_temp)
