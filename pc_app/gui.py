@@ -530,6 +530,20 @@ class FanCard(QFrame):
         self.visualizer.set_percent(v)
 
     def update_status(self, temp: float, fan_pct: int, mode: int):
+        # Handle None / NaN gracefully
+        try:
+            temp = float(temp) if temp is not None else 0.0
+        except (TypeError, ValueError):
+            temp = 0.0
+        try:
+            fan_pct = int(fan_pct) if fan_pct is not None else 0
+        except (TypeError, ValueError):
+            fan_pct = 0
+        try:
+            mode = int(mode) if mode is not None else 0
+        except (TypeError, ValueError):
+            mode = 0
+
         self._temp = temp
         self._percent = fan_pct
         self._mode = {0: "Auto", 1: "Manual", 2: "Game", 3: "Failsafe"}.get(mode, "?")
@@ -633,10 +647,28 @@ class MiniWidget(QFrame):
         layout.addWidget(self.btn_game)
 
     def update_status(self, cpu_temp, gpu_temp, cpu_pct, gpu_pct, conn: str, game: bool):
+        # Handle None / NaN values gracefully
+        try:
+            cpu_temp = float(cpu_temp) if cpu_temp is not None else 0.0
+        except (TypeError, ValueError):
+            cpu_temp = 0.0
+        try:
+            gpu_temp = float(gpu_temp) if gpu_temp is not None else 0.0
+        except (TypeError, ValueError):
+            gpu_temp = 0.0
+        try:
+            cpu_pct = int(cpu_pct) if cpu_pct is not None else 0
+        except (TypeError, ValueError):
+            cpu_pct = 0
+        try:
+            gpu_pct = int(gpu_pct) if gpu_pct is not None else 0
+        except (TypeError, ValueError):
+            gpu_pct = 0
+
         self.cpu_temp_lbl.setText(f"CPU: {cpu_temp:.0f}°C  Fan: {cpu_pct}%")
         self.gpu_temp_lbl.setText(f"GPU: {gpu_temp:.0f}°C  Fan: {gpu_pct}%")
-        self.lbl_conn.setText(conn)
-        self.btn_game.setChecked(game)
+        self.lbl_conn.setText(conn if conn else "● ...")
+        self.btn_game.setChecked(bool(game))
 
 
 # ============================================================
@@ -671,12 +703,9 @@ class FanControllerGUI(QMainWindow):
         self._timer.timeout.connect(self._poll_once)
         self._timer.start(int(config.poll_interval_sec * 1000))
 
-        # Mini mode widget
-        self._mini = MiniWidget()
-        self._mini.btn_expand.clicked.connect(self._show_full)
-        self._mini.btn_game.clicked.connect(self._toggle_game_mode)
-
-        # Drag position for mini mode
+        # Mini mode widget - created lazily (only when user clicks minimize)
+        # This prevents crashes from FramelessWindowHint on some systems
+        self._mini = None
         self._drag_offset = None
 
     def _setup_ui(self):
@@ -788,13 +817,37 @@ class FanControllerGUI(QMainWindow):
 
     # ---------- Mini / Full mode ----------
     def _show_mini(self):
-        self.hide()
-        self._mini.move(self.geometry().topLeft())
-        self._mini.show()
-        self._mini.raise_()
+        try:
+            if self._mini is None:
+                self._mini = MiniWidget()
+                self._mini.btn_expand.clicked.connect(self._show_full)
+                self._mini.btn_game.clicked.connect(self._toggle_game_mode)
+                # Initial position: bottom-right of screen
+                from PyQt6.QtGui import QGuiApplication
+                screen = QGuiApplication.primaryScreen()
+                if screen:
+                    g = screen.availableGeometry()
+                    self._mini.move(g.width() - 240, g.height() - 280)
+                else:
+                    self._mini.move(100, 100)
+            self.hide()
+            # Sync current status to mini
+            self._mini.update_status(
+                getattr(self, "_last_cpu_temp", 0.0),
+                getattr(self, "_last_gpu_temp", 0.0),
+                getattr(self, "_last_cpu_pct", 0),
+                getattr(self, "_last_gpu_pct", 0),
+                self.lbl_conn.text(),
+                self.btn_game.isChecked()
+            )
+            self._mini.show()
+            self._mini.raise_()
+        except Exception as e:
+            log.exception(f"Mini mode failed: {e}")
 
     def _show_full(self):
-        self._mini.hide()
+        if self._mini is not None:
+            self._mini.hide()
         self.show()
         self.raise_()
         self.activateWindow()
@@ -839,6 +892,12 @@ class FanControllerGUI(QMainWindow):
         cpu_mode = d.get("cpu_mode", 0)
         gpu_mode = d.get("gpu_mode", 0)
 
+        # Cache for mini widget
+        self._last_cpu_temp = cpu_temp
+        self._last_gpu_temp = gpu_temp
+        self._last_cpu_pct = cpu_pct
+        self._last_gpu_pct = gpu_pct
+
         # Update cards
         self.cards["cpu"].update_status(cpu_temp, cpu_pct, cpu_mode)
         self.cards["gpu"].update_status(gpu_temp, gpu_pct, gpu_mode)
@@ -856,10 +915,11 @@ class FanControllerGUI(QMainWindow):
             "🎮  خاموش کردن حالت گیم" if game else
             "🎮  فعال‌سازی حالت گیم (همه فن‌ها ۱۰۰٪)")
 
-        # Mini widget
-        conn_text = self.lbl_conn.text()
-        self._mini.update_status(cpu_temp, gpu_temp, cpu_pct, gpu_pct,
-                                  conn_text, game)
+        # Mini widget (if visible)
+        if self._mini is not None and self._mini.isVisible():
+            conn_text = self.lbl_conn.text()
+            self._mini.update_status(cpu_temp, gpu_temp, cpu_pct, gpu_pct,
+                                      conn_text, game)
 
     def _apply_state(self, state_int: int):
         state = ConnState(state_int)
@@ -887,7 +947,8 @@ class FanControllerGUI(QMainWindow):
         self.config.window_y = self.y()
         self.config.save()
         if self.config.minimize_to_tray_on_close:
-            self._mini.hide()
+            if self._mini is not None:
+                self._mini.hide()
             self.hide()
             e.ignore()
         else:

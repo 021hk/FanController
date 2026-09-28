@@ -20,19 +20,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def ensure_admin():
+    """Try to elevate to admin for LHM sensor access, but DON'T exit if not admin.
+    
+    Previously this would sys.exit(0) which made the app appear to close
+    instantly. Now it just logs a warning - the app will still run, but
+    GPU/CPU temps may show 0 (fallback to nvidia-smi).
+    """
     if os.name != "nt":
         return
     try:
         import ctypes
         if ctypes.windll.shell32.IsUserAnAdmin():
-            return
+            log.info("Running as Administrator (LHM sensors available)")
+            return True
+        log.warning(
+            "Not running as Administrator - LibreHardwareMonitor may not work. "
+            "Right-click the app → Run as administrator for full functionality. "
+            "Continuing with limited sensor access..."
+        )
+        return False
     except Exception:
-        return
-    log.info("Requesting admin privileges for hardware sensor access...")
-    params = " ".join(f'"{a}"' for a in sys.argv)
-    import ctypes
-    ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
-    sys.exit(0)
+        return False
 
 
 def main():
@@ -62,8 +70,14 @@ def main():
         use_wifi=config.use_wifi,
     )
 
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QMessageBox
+    from PyQt6.QtGui import QFont
     app = QApplication(sys.argv)
+    
+    # Set Persian-friendly default font
+    font = QFont("Tahoma", 10)
+    app.setFont(font)
+    
     app.setQuitOnLastWindowClosed(False)
     gui = None
 
@@ -82,22 +96,35 @@ def main():
         log.info(f"Profile -> {pid} ({get_profile(pid).name})")
         config.active_profile = pid
         config.save()
-        client.set_profile(pid)
-        push_all_curves(client, config)
+        try:
+            client.set_profile(pid)
+            push_all_curves(client, config)
+        except Exception as e:
+            log.warning(f"set_profile failed: {e}")
 
     def set_fan(fan: str, percent: int):
         mode = "auto" if percent == 0 else "manual"
         log.info(f"Fan {fan} -> {percent}% ({mode})")
-        client.set_fan(fan, percent, mode)
+        try:
+            client.set_fan(fan, percent, mode)
+        except Exception as e:
+            log.warning(f"set_fan failed: {e}")
 
     def show_gui():
         nonlocal gui
-        if gui is None:
-            from gui import FanControllerGUI
-            gui = FanControllerGUI(config, client,
-                                   toggle_game_mode, set_profile, set_fan)
-        gui.show()
-        gui.raise_()
+        try:
+            if gui is None:
+                from gui import FanControllerGUI
+                gui = FanControllerGUI(config, client,
+                                       toggle_game_mode, set_profile, set_fan)
+            gui.show()
+            gui.raise_()
+            gui.activateWindow()
+        except Exception as e:
+            log.exception(f"GUI failed to show: {e}")
+            QMessageBox.critical(None, "خطا در اجرای برنامه",
+                                  f"امکان نمایش پنجره وجود ندارد:\n\n{e}\n\n"
+                                  f"لطفاً لاگ برنامه را بررسی کنید.")
 
     tray = TrayController(
         on_show_gui=show_gui,
@@ -114,7 +141,13 @@ def main():
 
     client.start()
     time.sleep(1.0)
-    set_profile(config.active_profile)
+    try:
+        set_profile(config.active_profile)
+    except Exception as e:
+        log.warning(f"Initial profile set failed: {e}")
+
+    # Show GUI immediately on startup (don't make user click the tray icon)
+    show_gui()
 
     stop_event = threading.Event()
 
