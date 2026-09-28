@@ -38,12 +38,10 @@ ArchitecturesInstallIn64BitMode=x64
 ArchitecturesAllowed=x64
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
-AppDescription=Control PC fans with ESP8266 based on CPU/GPU temperature
 AppCopyright=Copyright (c) 2024
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "persian"; MessagesFile: "compiler:Languages\Farsi.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: checkedonce
