@@ -17,23 +17,30 @@ class HotkeyManager:
         self._listener = None
 
     def start(self) -> None:
+        """Start listening for hotkey. Silently fail if keyboard lib unavailable."""
         try:
             import keyboard
         except ImportError:
-            log.error("`keyboard` not installed; hotkeys disabled")
+            log.warning("`keyboard` not installed; hotkeys disabled")
             return
         try:
+            # On Windows, keyboard library may need admin rights to work globally
+            # If it fails, we just skip the hotkey - app still works via tray
             keyboard.add_hotkey(self.hotkey, self._fire, suppress=False)
+            self._started = True
             log.info(f"Hotkey registered: {self.hotkey}")
         except Exception as e:
-            log.error(f"Hotkey registration failed: {e}")
+            log.warning(f"Hotkey registration failed (needs admin?): {e}")
 
     def stop(self) -> None:
+        if not getattr(self, "_started", False):
+            return
         try:
             import keyboard
             keyboard.remove_hotkey(self.hotkey)
-        except Exception:
-            pass
+            self._started = False
+        except Exception as e:
+            log.debug(f"Hotkey removal failed: {e}")
 
     def _fire(self) -> None:
         log.info(f"Hotkey {self.hotkey} fired")

@@ -13,25 +13,69 @@ import threading
 from pathlib import Path
 
 # ============================================================
-# Redirect stdout/stderr to log file (prevents CMD window from popping up
-# when some libraries like pythonnet print to console)
+# CRITICAL: Redirect stdout/stderr BEFORE any imports.
+# This prevents CMD windows from flashing when subprocess calls are made
+# or when libraries like pythonnet/keyboard write to stdout.
+# We redirect to a log file in APPDATA so we can still debug issues.
 # ============================================================
-def redirect_stdio():
-    """Redirect stdout/stderr to log file - called BEFORE any imports."""
+def _redirect_stdio_to_file():
+    """Redirect sys.stdout/stderr to a log file - called before any other imports."""
     if sys.platform != "win32":
         return
     try:
-        if sys.stdout is None:
-            log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "FanController"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_file = log_dir / "stdout.log"
-            sys.stdout = open(log_file, "a", encoding="utf-8", buffering=1)
-            sys.stderr = sys.stdout
+        log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "FanController"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "stdout.log"
+        # Open in append mode with line buffering
+        f = open(log_file, "a", encoding="utf-8", buffering=1)
+        sys.stdout = f
+        sys.stderr = f
     except Exception:
-        pass
+        # Fallback: discard output completely (no console window)
+        try:
+            sys.stdout = open(os.devnull, "w")
+            sys.stderr = sys.stdout
+        except Exception:
+            pass
 
-# Apply redirect FIRST, before any imports that might print
-redirect_stdio()
+# Apply redirect FIRST
+_redirect_stdio_to_file()
+
+# Also patch subprocess on Windows to never show console windows
+if sys.platform == "win32":
+    import subprocess as _sp
+    _orig_check_output = _sp.check_output
+    _orig_Popen = _sp.Popen
+
+    def _patched_check_output(*args, **kwargs):
+        if 'startupinfo' not in kwargs or kwargs.get('startupinfo') is None:
+            try:
+                si = _sp.STARTUPINFO()
+                si.dwFlags |= _sp.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0  # SW_HIDE
+                kwargs['startupinfo'] = si
+            except AttributeError:
+                pass
+        if 'creationflags' not in kwargs:
+            kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+        return _orig_check_output(*args, **kwargs)
+
+    class _PatchedPopen(_orig_Popen):
+        def __init__(self, *args, **kwargs):
+            if kwargs.get('startupinfo') is None:
+                try:
+                    si = _sp.STARTUPINFO()
+                    si.dwFlags |= _sp.STARTF_USESHOWWINDOW
+                    si.wShowWindow = 0
+                    kwargs['startupinfo'] = si
+                except (AttributeError, KeyError):
+                    pass
+            if not kwargs.get('creationflags'):
+                kwargs['creationflags'] = 0x08000000  # CREATE_NO_WINDOW
+            super().__init__(*args, **kwargs)
+
+    _sp.check_output = _patched_check_output
+    _sp.Popen = _PatchedPopen
 
 # ============================================================
 # Logging setup - write to file AND console (if available)

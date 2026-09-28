@@ -31,6 +31,7 @@ class HardwareMonitor:
         self._computer = None
         self._initialized = False
         self._lock = threading.Lock()
+        # Initialize LHM in a way that doesn't spawn console windows
         self._init_librehardware()
         if not self._initialized:
             log.warning("[monitor] LHM not available, will try nvidia-smi fallback")
@@ -56,6 +57,14 @@ class HardwareMonitor:
             log.warning("LibreHardwareMonitorLib.dll not found")
             return
         try:
+            # Suppress .NET stdout (CLR may print messages)
+            if os.name == "nt":
+                try:
+                    import ctypes
+                    # Disable .NET's console output
+                    ctypes.windll.kernel32.SetConsoleOutputCP(0)
+                except Exception:
+                    pass
             sys.path.insert(0, os.path.dirname(dll_path))
             clr.AddReference("LibreHardwareMonitorLib")
             from LibreHardwareMonitor import Hardware
@@ -142,7 +151,20 @@ class HardwareMonitor:
 
     @staticmethod
     def _read_nvidia_smi() -> Temps:
+        """Use nvidia-smi to read GPU temperature WITHOUT spawning a CMD window."""
         t = Temps()
+        # Prepare subprocess kwargs to hide console window on Windows
+        startupinfo = None
+        creationflags = 0
+        if os.name == "nt":
+            try:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # SW_HIDE
+                creationflags = 0x08000000  # CREATE_NO_WINDOW
+            except AttributeError:
+                pass
+
         try:
             candidates = [
                 r"C:\Windows\System32\nvidia-smi.exe",
@@ -156,9 +178,12 @@ class HardwareMonitor:
                     break
             if exe is None:
                 try:
-                    out = subprocess.check_output(["where", "nvidia-smi"],
-                                                  stderr=subprocess.DEVNULL,
-                                                  timeout=3).decode().strip()
+                    out = subprocess.check_output(
+                        ["where", "nvidia-smi"],
+                        stderr=subprocess.DEVNULL, timeout=3,
+                        startupinfo=startupinfo,
+                        creationflags=creationflags,
+                    ).decode().strip()
                     if out:
                         exe = out.splitlines()[0]
                 except Exception:
@@ -168,7 +193,9 @@ class HardwareMonitor:
             out = subprocess.check_output(
                 [exe, "--query-gpu=temperature.gpu,name",
                  "--format=csv,noheader,nounits"],
-                stderr=subprocess.DEVNULL, timeout=4
+                stderr=subprocess.DEVNULL, timeout=4,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
             ).decode(errors="replace").strip()
             line = out.splitlines()[0]
             temp_str, name = line.split(",", 1)
@@ -176,6 +203,7 @@ class HardwareMonitor:
             t.gpu_name = name.strip()
             t.gpu_sensor_path = "nvidia-smi"
         except Exception:
+            # Try WMI as last resort (also hide window)
             try:
                 import wmi
                 c = wmi.WMI()
