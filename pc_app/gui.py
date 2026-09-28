@@ -670,7 +670,7 @@ class MiniWidget(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-        self.setFixedSize(280, 320)
+        self.setFixedSize(340, 280)
 
         # Apply dark theme styles
         self.setStyleSheet(f"""
@@ -725,53 +725,83 @@ class MiniWidget(QWidget):
         """)
         layout.addWidget(self.lbl_conn)
 
-        # Two spinning fan circles side by side
+        # Two spinning fan circles side by side, each with info BESIDE it
         circles_layout = QHBoxLayout()
-        circles_layout.setSpacing(8)
+        circles_layout.setSpacing(12)
 
-        # CPU fan circle (cyan)
-        cpu_box = QVBoxLayout()
-        cpu_box.setSpacing(2)
-        self.cpu_circle = MiniFanCircle("CPU", PRIMARY_COLOR, size=80)
-        cpu_circle_layout = QHBoxLayout()
-        cpu_circle_layout.addStretch()
-        cpu_circle_layout.addWidget(self.cpu_circle)
-        cpu_circle_layout.addStretch()
-        cpu_box.addLayout(cpu_circle_layout)
-        self.cpu_info = QLabel("--°C  --%")
-        self.cpu_info.setStyleSheet(f"""
+        # CPU fan (circle on left, info on right)
+        cpu_row = QHBoxLayout()
+        cpu_row.setSpacing(8)
+        self.cpu_circle = MiniFanCircle("CPU", PRIMARY_COLOR, size=90)
+        cpu_row.addWidget(self.cpu_circle)
+        cpu_info_box = QVBoxLayout()
+        cpu_info_box.setSpacing(2)
+        cpu_temp_lbl = QLabel("دماتر")
+        cpu_temp_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 9px; background: transparent;")
+        cpu_temp_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        cpu_info_box.addWidget(cpu_temp_lbl)
+        self.cpu_temp_value = QLabel("--°C")
+        self.cpu_temp_value.setStyleSheet(f"""
             color: {PRIMARY_COLOR};
-            font-size: 11px;
+            font-size: 16px;
             font-weight: bold;
-            padding: 2px;
-            background: rgba(0,210,255,0.08);
-            border-radius: 6px;
+            background: transparent;
         """)
-        self.cpu_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cpu_box.addWidget(self.cpu_info)
-        circles_layout.addLayout(cpu_box)
+        self.cpu_temp_value.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        cpu_info_box.addWidget(self.cpu_temp_value)
+        cpu_pct_lbl = QLabel("سرعت فن")
+        cpu_pct_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 9px; background: transparent;")
+        cpu_pct_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        cpu_info_box.addWidget(cpu_pct_lbl)
+        self.cpu_pct_value = QLabel("--%")
+        self.cpu_pct_value.setStyleSheet(f"""
+            color: {PRIMARY_COLOR};
+            font-size: 16px;
+            font-weight: bold;
+            background: transparent;
+        """)
+        self.cpu_pct_value.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        cpu_info_box.addWidget(self.cpu_pct_value)
+        cpu_info_box.addStretch()
+        cpu_row.addLayout(cpu_info_box)
+        circles_layout.addLayout(cpu_row)
 
-        # GPU fan circle (red)
-        gpu_box = QVBoxLayout()
-        gpu_box.setSpacing(2)
-        self.gpu_circle = MiniFanCircle("GPU", "#ff5252", size=80)
-        gpu_circle_layout = QHBoxLayout()
-        gpu_circle_layout.addStretch()
-        gpu_circle_layout.addWidget(self.gpu_circle)
-        gpu_circle_layout.addStretch()
-        gpu_box.addLayout(gpu_circle_layout)
-        self.gpu_info = QLabel("--°C  --%")
-        self.gpu_info.setStyleSheet("""
+        # GPU fan (circle on left, info on right)
+        gpu_row = QHBoxLayout()
+        gpu_row.setSpacing(8)
+        self.gpu_circle = MiniFanCircle("GPU", "#ff5252", size=90)
+        gpu_row.addWidget(self.gpu_circle)
+        gpu_info_box = QVBoxLayout()
+        gpu_info_box.setSpacing(2)
+        gpu_temp_lbl = QLabel("دماتر")
+        gpu_temp_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 9px; background: transparent;")
+        gpu_temp_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        gpu_info_box.addWidget(gpu_temp_lbl)
+        self.gpu_temp_value = QLabel("--°C")
+        self.gpu_temp_value.setStyleSheet("""
             color: #ff5252;
-            font-size: 11px;
+            font-size: 16px;
             font-weight: bold;
-            padding: 2px;
-            background: rgba(255,82,82,0.08);
-            border-radius: 6px;
+            background: transparent;
         """)
-        self.gpu_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gpu_box.addWidget(self.gpu_info)
-        circles_layout.addLayout(gpu_box)
+        self.gpu_temp_value.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        gpu_info_box.addWidget(self.gpu_temp_value)
+        gpu_pct_lbl = QLabel("سرعت فن")
+        gpu_pct_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 9px; background: transparent;")
+        gpu_pct_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        gpu_info_box.addWidget(gpu_pct_lbl)
+        self.gpu_pct_value = QLabel("--%")
+        self.gpu_pct_value.setStyleSheet("""
+            color: #ff5252;
+            font-size: 16px;
+            font-weight: bold;
+            background: transparent;
+        """)
+        self.gpu_pct_value.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        gpu_info_box.addWidget(self.gpu_pct_value)
+        gpu_info_box.addStretch()
+        gpu_row.addLayout(gpu_info_box)
+        circles_layout.addLayout(gpu_row)
 
         layout.addLayout(circles_layout)
 
@@ -847,9 +877,11 @@ class MiniWidget(QWidget):
         self.gpu_circle.set_percent(gpu_pct)
         self.gpu_circle.set_temp(gpu_temp)
 
-        # Update info labels
-        self.cpu_info.setText(f"{cpu_temp:.0f}°C  {cpu_pct}%")
-        self.gpu_info.setText(f"{gpu_temp:.0f}°C  {gpu_pct}%")
+        # Update info labels BESIDE the circles
+        self.cpu_temp_value.setText(f"{cpu_temp:.0f}°C")
+        self.cpu_pct_value.setText(f"{cpu_pct}%")
+        self.gpu_temp_value.setText(f"{gpu_temp:.0f}°C")
+        self.gpu_pct_value.setText(f"{gpu_pct}%")
         self.lbl_conn.setText(conn if conn else "● ...")
         self.btn_game.setChecked(bool(game))
 
