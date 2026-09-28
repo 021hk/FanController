@@ -41,17 +41,45 @@ jobs:
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          $url = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.3/LibreHardwareMonitor-Lib-net462.zip'
+          $url = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip'
+          Write-Host "Downloading from $url"
           Invoke-WebRequest -Uri $url -OutFile lhm.zip
+          Write-Host "Extracting..."
           Expand-Archive -Path lhm.zip -DestinationPath lhm_extracted -Force
+          
+          # Find and copy LibreHardwareMonitorLib.dll
           $dll = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'LibreHardwareMonitorLib.dll' | Select-Object -First 1
-          if ($dll) { Copy-Item $dll.FullName -Destination '.' -Force }
+          if ($dll) { 
+            Copy-Item $dll.FullName -Destination '.' -Force
+            Write-Host "Copied: $($dll.FullName)"
+          } else {
+            Write-Host "ERROR: LibreHardwareMonitorLib.dll not found in archive!"
+            exit 1
+          }
+          
+          # Find and copy HidSharp.dll (dependency)
+          $hid = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'HidSharp.dll' | Select-Object -First 1
+          if ($hid) { 
+            Copy-Item $hid.FullName -Destination '.' -Force
+            Write-Host "Copied: $($hid.FullName)"
+          }
+          
+          # Find and copy LibreHardwareMonitorLib.dll.config if exists
           $cfg = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'LibreHardwareMonitorLib.dll.config' | Select-Object -First 1
           if ($cfg) { Copy-Item $cfg.FullName -Destination '.' -Force }
-          $hid = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'HidSharp.dll' | Select-Object -First 1
-          if ($hid) { Copy-Item $hid.FullName -Destination '.' -Force }
+          
+          # Cleanup
           Remove-Item lhm.zip -Force
           Remove-Item lhm_extracted -Recurse -Force
+          
+          # Verify
+          if (Test-Path 'LibreHardwareMonitorLib.dll') {
+            Write-Host "SUCCESS: LibreHardwareMonitorLib.dll ready"
+            Get-Item LibreHardwareMonitorLib.dll | Format-List Name, Length
+          } else {
+            Write-Host "FATAL: DLL missing!"
+            exit 1
+          }
 
       - name: Generate icon
         working-directory: pc_app

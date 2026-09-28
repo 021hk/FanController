@@ -59,7 +59,7 @@ if not exist "LibreHardwareMonitorLib.dll" (
     echo       Not found. Downloading from GitHub...
     powershell -Command ^
         "$ProgressPreference = 'SilentlyContinue';" ^
-        "$url = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.3/LibreHardwareMonitor-Lib-net462.zip';" ^
+        "$url = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip';" ^
         "$zip = 'lhm.zip';" ^
         "$extractDir = 'lhm_extracted';" ^
         "Invoke-WebRequest -Uri $url -OutFile $zip;" ^
