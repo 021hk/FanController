@@ -17,8 +17,11 @@ hiddenimports += collect_submodules('serial')
 hiddenimports += ['keyboard._winkeyboard', 'keyboard._nixkeyboard']
 hiddenimports += ['serial.tools.list_ports', 'serial.serialcli']
 
-# Data files (no LHM.exe - we use WMI/PowerShell instead)
+# Data files - bundle LibreHardwareMonitor.exe + all DLLs
 datas = []
+for f in os.listdir('.'):
+    if f.lower().endswith(('.exe', '.dll', '.config')):
+        datas.append((f, '.'))
 datas += collect_data_files('PyQt6')
 
 a = Analysis(

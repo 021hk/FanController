@@ -36,6 +36,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pywin32
 
+      - name: Download LibreHardwareMonitor (full app)
+        working-directory: pc_app
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $url = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip'
+          Write-Host "Downloading LHM..."
+          Invoke-WebRequest -Uri $url -OutFile lhm.zip
+          Expand-Archive -Path lhm.zip -DestinationPath lhm_extracted -Force
+          
+          Get-ChildItem -Path lhm_extracted -Recurse | Where-Object {
+            $_.Extension -in '.exe', '.dll', '.config'
+          } | ForEach-Object {
+            Copy-Item $_.FullName -Destination '.' -Force
+          }
+          
+          Remove-Item lhm.zip -Force
+          Remove-Item lhm_extracted -Recurse -Force
+          
+          Write-Host "Bundled .exe files:"
+          Get-ChildItem -Filter '*.exe' | Format-Table Name, Length
+          Write-Host "Bundled .dll count:"
+          (Get-ChildItem -Filter '*.dll').Count
+
       - name: Generate icon
         working-directory: pc_app
         run: python icon_generator.py
