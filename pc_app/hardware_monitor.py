@@ -14,6 +14,33 @@ from typing import Optional, Tuple, Callable
 from dataclasses import dataclass
 
 
+def _get_search_paths() -> list:
+    """Get all possible DLL search locations (dev + PyInstaller bundle)."""
+    paths = []
+    # 1. PyInstaller _MEIPASS (onedir or onefile temp extraction)
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        paths.append(meipass)
+    # 2. Directory of the executable (frozen)
+    if getattr(sys, 'frozen', False):
+        paths.append(os.path.dirname(sys.executable))
+    # 3. Directory of this script (dev mode)
+    paths.append(os.path.dirname(os.path.abspath(__file__)))
+    # 4. Subdirectories
+    for p in list(paths):
+        paths.append(os.path.join(p, "lib"))
+        paths.append(os.path.join(p, "LibreHardwareMonitor"))
+        paths.append(os.path.join(p, "_internal"))
+    # Deduplicate
+    seen = set()
+    unique = []
+    for p in paths:
+        if p and p not in seen and os.path.isdir(p):
+            seen.add(p)
+            unique.append(p)
+    return unique
+
+
 @dataclass
 class Temps:
     cpu: float = 0.0
@@ -31,42 +58,56 @@ class HardwareMonitor:
         self._computer = None
         self._initialized = False
         self._lock = threading.Lock()
-        # Initialize LHM in a way that doesn't spawn console windows
+        self._init_error = ""
+        # Log environment info for debugging
+        log.info(f"Python: {sys.version}")
+        log.info(f"Frozen: {getattr(sys, 'frozen', False)}")
+        log.info(f"_MEIPASS: {getattr(sys, '_MEIPASS', 'N/A')}")
+        log.info(f"Search paths: {_get_search_paths()}")
+        # Initialize LHM
         self._init_librehardware()
         if not self._initialized:
-            log.warning("[monitor] LHM not available, will try nvidia-smi fallback")
+            log.warning(f"LHM not available ({self._init_error}), will try nvidia-smi fallback")
+        else:
+            log.info("LHM initialized successfully")
 
     def _init_librehardware(self):
+        self._init_error = ""
         try:
             import clr
         except ImportError:
-            log.error("pythonnet not installed: pip install pythonnet")
+            self._init_error = "pythonnet not installed"
+            log.error(self._init_error)
             return
-        search_paths = [
-            os.path.dirname(os.path.abspath(__file__)),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "LibreHardwareMonitor"),
-        ]
+
+        # Search for the DLL in all possible locations
         dll_path = None
-        for p in search_paths:
+        for p in _get_search_paths():
             candidate = os.path.join(p, "LibreHardwareMonitorLib.dll")
+            log.info(f"  Checking: {candidate} -> exists={os.path.exists(candidate)}")
             if os.path.exists(candidate):
                 dll_path = candidate
                 break
+
         if dll_path is None:
-            log.warning("LibreHardwareMonitorLib.dll not found")
+            self._init_error = "LibreHardwareMonitorLib.dll not found in any search path"
+            log.warning(self._init_error)
             return
+
+        log.info(f"Found DLL at: {dll_path}")
         try:
-            # Suppress .NET stdout (CLR may print messages)
-            if os.name == "nt":
-                try:
-                    import ctypes
-                    # Disable .NET's console output
-                    ctypes.windll.kernel32.SetConsoleOutputCP(0)
-                except Exception:
-                    pass
-            sys.path.insert(0, os.path.dirname(dll_path))
-            clr.AddReference("LibreHardwareMonitorLib")
+            # Add DLL directory to sys.path AND use AddReferenceToFileAndPath
+            dll_dir = os.path.dirname(dll_path)
+            if dll_dir not in sys.path:
+                sys.path.insert(0, dll_dir)
+
+            # Try multiple ways to load the reference
+            try:
+                clr.AddReference("LibreHardwareMonitorLib")
+            except Exception:
+                log.info("AddReference by name failed, trying by file path...")
+                clr.AddReferenceToFileAndPath(dll_path)
+
             from LibreHardwareMonitor import Hardware
             self._computer = Hardware.Computer(isCpuEnabled=True,
                                                 isGpuEnabled=True,
@@ -79,9 +120,10 @@ class HardwareMonitor:
                                                 isPsuEnabled=False)
             self._computer.Open()
             self._initialized = True
-            log.info("LibreHardwareMonitor initialized")
+            log.info("LibreHardwareMonitor initialized successfully")
         except Exception as e:
-            log.error(f"LHM init failed: {e}")
+            self._init_error = f"LHM init failed: {e}"
+            log.error(self._init_error, exc_info=True)
             self._initialized = False
 
     def read(self) -> Temps:
@@ -89,6 +131,9 @@ class HardwareMonitor:
             t = self._read_lhm()
             if t.cpu > 0 or t.gpu > 0:
                 return t
+            log.debug("LHM returned 0 temps, trying nvidia-smi fallback")
+        else:
+            log.debug(f"LHM not initialized ({self._init_error}), using nvidia-smi")
         return self._read_nvidia_smi()
 
     def _read_lhm(self) -> Temps:
@@ -165,6 +210,7 @@ class HardwareMonitor:
             except AttributeError:
                 pass
 
+        # Try nvidia-smi for GPU
         try:
             candidates = [
                 r"C:\Windows\System32\nvidia-smi.exe",
@@ -188,33 +234,72 @@ class HardwareMonitor:
                         exe = out.splitlines()[0]
                 except Exception:
                     pass
-            if exe is None:
-                return t
+            if exe:
+                log.info(f"nvidia-smi found at: {exe}")
+                out = subprocess.check_output(
+                    [exe, "--query-gpu=temperature.gpu,name",
+                     "--format=csv,noheader,nounits"],
+                    stderr=subprocess.DEVNULL, timeout=4,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                ).decode(errors="replace").strip()
+                if out:
+                    line = out.splitlines()[0]
+                    temp_str, name = line.split(",", 1)
+                    t.gpu = float(temp_str.strip())
+                    t.gpu_name = name.strip()
+                    t.gpu_sensor_path = "nvidia-smi"
+                    log.info(f"nvidia-smi GPU temp: {t.gpu}°C ({t.gpu_name})")
+        except Exception as e:
+            log.debug(f"nvidia-smi failed: {e}")
+
+        # Try WMI for CPU temp (OpenHardwareMonitor-compatible approach)
+        if t.cpu == 0:
+            try:
+                t.cpu = HardwareMonitor._read_wmi_cpu_temp()
+                if t.cpu > 0:
+                    log.info(f"WMI CPU temp: {t.cpu}°C")
+            except Exception as e:
+                log.debug(f"WMI CPU temp failed: {e}")
+
+        return t
+
+    @staticmethod
+    def _read_wmi_cpu_temp() -> float:
+        """Read CPU temperature from WMI MSAcpi_ThermalZoneTemperature.
+        Note: This only works on some systems and may return 0."""
+        if os.name != "nt":
+            return 0.0
+        try:
+            import ctypes
+            import struct
+            # Use WMI via subprocess to avoid pywin32 dependency issues
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+            creationflags = 0x08000000
+
+            # PowerShell query for CPU temp via WMI
+            ps_cmd = (
+                "(Get-CimInstance -Namespace root/wmi -ClassName "
+                "MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue | "
+                "Select-Object -First 1).CurrentTemperature"
+            )
             out = subprocess.check_output(
-                [exe, "--query-gpu=temperature.gpu,name",
-                 "--format=csv,noheader,nounits"],
-                stderr=subprocess.DEVNULL, timeout=4,
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                stderr=subprocess.DEVNULL, timeout=5,
                 startupinfo=startupinfo,
                 creationflags=creationflags,
             ).decode(errors="replace").strip()
-            line = out.splitlines()[0]
-            temp_str, name = line.split(",", 1)
-            t.gpu = float(temp_str.strip())
-            t.gpu_name = name.strip()
-            t.gpu_sensor_path = "nvidia-smi"
-        except Exception:
-            # Try WMI as last resort (also hide window)
-            try:
-                import wmi
-                c = wmi.WMI()
-                for tz in c.Win32_TemperatureProbe():
-                    if tz.CurrentReading:
-                        t.cpu = float(tz.CurrentReading) / 10.0
-                        t.cpu_name = "WMI thermal zone"
-                        break
-            except Exception:
-                pass
-        return t
+            if out and out.isdigit():
+                # WMI returns temp in tenths of Kelvin
+                temp_k = int(out) / 10.0
+                temp_c = temp_k - 273.15
+                if 0 < temp_c < 150:
+                    return temp_c
+        except Exception as e:
+            log.debug(f"WMI thermal zone failed: {e}")
+        return 0.0
 
     def poll_loop(self, interval: float, callback: Callable[[Temps], None]):
         while True:

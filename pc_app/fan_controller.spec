@@ -24,12 +24,17 @@ hiddenimports = []
 hiddenimports += collect_submodules('PyQt6')
 hiddenimports += collect_submodules('pystray')
 hiddenimports += collect_submodules('PIL')
+hiddenimports += collect_submodules('websocket')
+hiddenimports += collect_submodules('serial')
 hiddenimports += ['keyboard._winkeyboard', 'keyboard._nixkeyboard']
 hiddenimports += ['serial.tools.list_ports', 'serial.serialcli']
-hiddenimports += ['LibreHardwareMonitor', 'LibreHardwareMonitor.Hardware']
 hiddenimports += ['clr']
+hiddenimports += ['pythonnet']
+# Add common .NET interop modules
+hiddenimports += ['System', 'System.IO', 'System.Reflection']
 
 # Include LibreHardwareMonitor DLLs if present
+# These MUST be in the root of the bundle for pythonnet to find them
 datas = []
 for dll in ['LibreHardwareMonitorLib.dll',
             'LibreHardwareMonitorLib.dll.config',
