@@ -36,7 +36,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pywin32
 
-      - name: Download LibreHardwareMonitorLib.dll
+      - name: Download LibreHardwareMonitor (full app, not just DLL)
         working-directory: pc_app
         shell: pwsh
         run: |
@@ -47,39 +47,48 @@ jobs:
           Write-Host "Extracting..."
           Expand-Archive -Path lhm.zip -DestinationPath lhm_extracted -Force
           
-          # Find and copy LibreHardwareMonitorLib.dll
+          # We need LibreHardwareMonitor.exe (the full app, not just the DLL)
+          # It will be launched as a background process at runtime
+          $exe = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'LibreHardwareMonitor.exe' | Select-Object -First 1
+          if ($exe) { 
+            Copy-Item $exe.FullName -Destination '.' -Force
+            Write-Host "Copied: $($exe.FullName) (size: $($exe.Length) bytes)"
+          } else {
+            Write-Host "ERROR: LibreHardwareMonitor.exe not found in archive!"
+            exit 1
+          }
+          
+          # Also copy the DLL and config (LHM.exe needs them)
           $dll = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'LibreHardwareMonitorLib.dll' | Select-Object -First 1
           if ($dll) { 
             Copy-Item $dll.FullName -Destination '.' -Force
             Write-Host "Copied: $($dll.FullName)"
-          } else {
-            Write-Host "ERROR: LibreHardwareMonitorLib.dll not found in archive!"
-            exit 1
           }
           
-          # Find and copy HidSharp.dll (dependency)
+          $cfg = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'LibreHardwareMonitor.exe.config' | Select-Object -First 1
+          if ($cfg) { 
+            Copy-Item $cfg.FullName -Destination '.' -Force
+            Write-Host "Copied: $($cfg.FullName)"
+          }
+          
           $hid = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'HidSharp.dll' | Select-Object -First 1
           if ($hid) { 
             Copy-Item $hid.FullName -Destination '.' -Force
             Write-Host "Copied: $($hid.FullName)"
           }
           
-          # Find and copy LibreHardwareMonitorLib.dll.config if exists
-          $cfg = Get-ChildItem -Path lhm_extracted -Recurse -Filter 'LibreHardwareMonitorLib.dll.config' | Select-Object -First 1
-          if ($cfg) { Copy-Item $cfg.FullName -Destination '.' -Force }
+          # Copy ALL DLLs from LHM (it has many dependencies)
+          Get-ChildItem -Path lhm_extracted -Recurse -Filter '*.dll' | ForEach-Object {
+            Copy-Item $_.FullName -Destination '.' -Force
+          }
           
           # Cleanup
           Remove-Item lhm.zip -Force
           Remove-Item lhm_extracted -Recurse -Force
           
-          # Verify
-          if (Test-Path 'LibreHardwareMonitorLib.dll') {
-            Write-Host "SUCCESS: LibreHardwareMonitorLib.dll ready"
-            Get-Item LibreHardwareMonitorLib.dll | Format-List Name, Length
-          } else {
-            Write-Host "FATAL: DLL missing!"
-            exit 1
-          }
+          Write-Host "`nFiles in pc_app:"
+          Get-ChildItem -Filter '*.dll' | Format-Table Name, Length
+          Get-ChildItem -Filter '*.exe' | Format-Table Name, Length
 
       - name: Generate icon
         working-directory: pc_app

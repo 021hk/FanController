@@ -1,21 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 fan_controller.spec - PyInstaller build configuration.
-
-Builds the ESP8266 Fan Controller as a standalone Windows .exe
-with all dependencies bundled (PyQt6, pystray, websocket-client, etc.).
-
-Usage:
-    python -m PyInstaller fan_controller.spec --noconfirm --clean
-
-Output:
-    dist/FanController/FanController.exe
-    dist/FanController/_internal/  (DLLs, Qt plugins, etc.)
 """
 
 import os
 import sys
+import logging
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 block_cipher = None
 
@@ -28,19 +22,26 @@ hiddenimports += collect_submodules('websocket')
 hiddenimports += collect_submodules('serial')
 hiddenimports += ['keyboard._winkeyboard', 'keyboard._nixkeyboard']
 hiddenimports += ['serial.tools.list_ports', 'serial.serialcli']
-hiddenimports += ['clr']
-hiddenimports += ['pythonnet']
-# Add common .NET interop modules
-hiddenimports += ['System', 'System.IO', 'System.Reflection']
 
-# Include LibreHardwareMonitor DLLs if present
-# These MUST be in the root of the bundle for pythonnet to find them
+# Include LibreHardwareMonitor.exe + ALL its DLL dependencies
+# We launch LHM.exe as a background process to expose WMI sensors
 datas = []
-for dll in ['LibreHardwareMonitorLib.dll',
-            'LibreHardwareMonitorLib.dll.config',
-            'HidSharp.dll']:
-    if os.path.exists(dll):
-        datas.append((dll, '.'))
+lhm_files_to_bundle = [
+    'LibreHardwareMonitor.exe',
+    'LibreHardwareMonitor.exe.config',
+    'LibreHardwareMonitorLib.dll',
+    'HidSharp.dll',
+]
+# Add LHM exe + all .dll files in current directory
+for f in lhm_files_to_bundle:
+    if os.path.exists(f):
+        datas.append((f, '.'))
+
+# Also add any other .dll files that might be LHM dependencies
+for f in os.listdir('.'):
+    if f.lower().endswith('.dll') and f not in lhm_files_to_bundle:
+        datas.append((f, '.'))
+        log.info(f'Bundling additional DLL: {f}')
 
 # Include LHM resources folder if present
 if os.path.isdir('LibreHardwareMonitorLib.resources'):

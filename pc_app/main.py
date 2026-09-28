@@ -125,32 +125,48 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def ensure_admin():
-    """Try to elevate to admin for LHM sensor access, but DON'T exit if not admin.
+    """Force the app to run as Administrator.
     
-    Previously this would sys.exit(0) which made the app appear to close
-    instantly. Now it just logs a warning - the app will still run, but
-    GPU/CPU temps may show 0 (fallback to nvidia-smi).
+    If not admin, relaunch elevated and exit current instance.
+    This is required for LibreHardwareMonitor to access hardware sensors.
     """
     if os.name != "nt":
-        return
+        return True
     try:
         import ctypes
         if ctypes.windll.shell32.IsUserAnAdmin():
-            log.info("Running as Administrator (LHM sensors available)")
+            log.info("Running as Administrator (sensors available)")
             return True
-        log.warning(
-            "Not running as Administrator - LibreHardwareMonitor may not work. "
-            "Right-click the app → Run as administrator for full functionality. "
-            "Continuing with limited sensor access..."
-        )
-        return False
     except Exception:
+        pass
+
+    log.info("Not running as admin. Relaunching elevated...")
+    try:
+        import ctypes
+        # Build command line with all original args
+        params = " ".join(f'"{a}"' for a in sys.argv)
+        # ShellExecuteW with "runas" verb triggers UAC prompt
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, params, None, 0  # 0 = SW_HIDE
+        )
+        # ShellExecuteW returns > 32 on success
+        if result <= 32:
+            log.error(f"ShellExecuteW failed with code {result}")
+            return False
+        log.info("Elevated instance launched. Exiting current instance.")
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        log.error(f"Failed to elevate: {e}")
         return False
 
 
 def main():
-    ensure_admin()
-
+    # Force admin - LHM sensors require admin rights
+    if not ensure_admin():
+        log.warning("Could not elevate to admin. Continuing with limited functionality.")
+    
     from config import Config, CONFIG_FILE
     from hardware_monitor import HardwareMonitor
     from esp_client import ESPClient, ConnState
@@ -284,9 +300,22 @@ def main():
     def shutdown(*_):
         log.info("Shutting down...")
         stop_event.set()
-        hk.stop()
-        tray.stop()
-        client.stop()
+        try:
+            hk.stop()
+        except Exception:
+            pass
+        try:
+            tray.stop()
+        except Exception:
+            pass
+        try:
+            client.stop()
+        except Exception:
+            pass
+        try:
+            monitor.close()
+        except Exception:
+            pass
         app.quit()
     signal.signal(signal.SIGINT, shutdown)
     try:
