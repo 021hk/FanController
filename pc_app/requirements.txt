@@ -5,5 +5,3 @@ websocket-client>=1.7
 requests>=2.31
 pyserial>=3.5
 keyboard>=0.13.5
-# pythonnet removed - we use LHM.exe subprocess instead (more reliable)
-# WMI not needed - we use PowerShell Get-CimInstance directly

@@ -125,40 +125,24 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def ensure_admin():
-    """Force the app to run as Administrator.
+    """Check if running as admin. Don't force-elevate - just log a warning.
     
-    If not admin, relaunch elevated and exit current instance.
-    This is required for LibreHardwareMonitor to access hardware sensors.
+    The app will work without admin (using nvidia-smi + WMI fallbacks),
+    but for full CPU temp coverage admin is recommended.
     """
     if os.name != "nt":
         return True
     try:
         import ctypes
         if ctypes.windll.shell32.IsUserAnAdmin():
-            log.info("Running as Administrator (sensors available)")
+            log.info("Running as Administrator (full sensor access available)")
             return True
-    except Exception:
-        pass
-
-    log.info("Not running as admin. Relaunching elevated...")
-    try:
-        import ctypes
-        # Build command line with all original args
-        params = " ".join(f'"{a}"' for a in sys.argv)
-        # ShellExecuteW with "runas" verb triggers UAC prompt
-        result = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, params, None, 0  # 0 = SW_HIDE
+        log.warning(
+            "Not running as Administrator - CPU temps may be limited. "
+            "For full coverage, right-click → Run as administrator."
         )
-        # ShellExecuteW returns > 32 on success
-        if result <= 32:
-            log.error(f"ShellExecuteW failed with code {result}")
-            return False
-        log.info("Elevated instance launched. Exiting current instance.")
-        sys.exit(0)
-    except SystemExit:
-        raise
-    except Exception as e:
-        log.error(f"Failed to elevate: {e}")
+        return False
+    except Exception:
         return False
 
 
