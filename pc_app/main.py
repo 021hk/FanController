@@ -222,6 +222,8 @@ def main():
                 from gui import FanControllerGUI
                 gui = FanControllerGUI(config, client,
                                        toggle_game_mode, set_profile, set_fan)
+                # Pass hardware monitor to GUI so it can display local temps
+                gui.set_hardware_monitor(monitor)
             gui.show()
             gui.raise_()
             gui.activateWindow()

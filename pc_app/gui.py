@@ -529,6 +529,17 @@ class FanCard(QFrame):
         self._percent = v
         self.visualizer.set_percent(v)
 
+    def update_temp_only(self, temp: float):
+        """Update only the temperature display (from local hardware).
+        Fan percent comes from ESP, so we don't touch slider/spinbox here."""
+        try:
+            temp = float(temp) if temp is not None else 0.0
+        except (TypeError, ValueError):
+            temp = 0.0
+        self._temp = temp
+        self.stat_temp_value.setText(f"{temp:.0f}°")
+        self.visualizer.set_temp(temp)
+
     def update_status(self, temp: float, fan_pct: int, mode: int):
         # Handle None / NaN gracefully
         try:
@@ -904,6 +915,7 @@ class MiniWidget(QWidget):
 class FanControllerGUI(QMainWindow):
     status_signal = pyqtSignal(dict)
     state_signal = pyqtSignal(int)
+    local_temp_signal = pyqtSignal(float, float)  # cpu_temp, gpu_temp from local hardware
 
     def __init__(self, config: Config, client: ESPClient,
                  on_game_mode, on_set_profile, on_set_fan):
@@ -925,13 +937,16 @@ class FanControllerGUI(QMainWindow):
         self.client.on_state_change = self._on_state_change
         self.status_signal.connect(self._apply_status)
         self.state_signal.connect(self._apply_state)
+        self.local_temp_signal.connect(self._apply_local_temp)
 
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._poll_once)
-        self._timer.start(int(config.poll_interval_sec * 1000))
+        # Local hardware temp polling timer (independent of ESP)
+        # Reads CPU/GPU temps every 2 seconds from LibreHardwareMonitor / nvidia-smi
+        # and displays them immediately (even without ESP connection)
+        self._hw_timer = QTimer(self)
+        self._hw_timer.timeout.connect(self._poll_local_hw)
+        self._hw_timer.start(int(config.poll_interval_sec * 1000))
 
-        # Mini mode widget - created lazily (only when user clicks minimize)
-        # This prevents crashes from FramelessWindowHint on some systems
+        # Mini mode widget - created lazily
         self._mini = None
         self._drag_offset = None
 
@@ -964,21 +979,25 @@ class FanControllerGUI(QMainWindow):
         ctrl_layout.setSpacing(6)
 
         # Settings button (gear icon)
-        self.btn_settings = QPushButton("⚙")
+        self.btn_settings = QPushButton("⚙ تنظیمات")
         self.btn_settings.setObjectName("MiniButton")
-        self.btn_settings.setFixedSize(32, 32)
-        self.btn_settings.setToolTip("تنظیمات منحنی دما-فن")
+        self.btn_settings.setFixedHeight(32)
+        self.btn_settings.setMinimumWidth(90)
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_settings.clicked.connect(self._open_settings)
         ctrl_layout.addWidget(self.btn_settings)
 
-        self.btn_mini = QPushButton("🗕")
+        # Mini mode button (with text)
+        self.btn_mini = QPushButton("🗗 مینی")
         self.btn_mini.setObjectName("MiniButton")
-        self.btn_mini.setFixedSize(32, 32)
-        self.btn_mini.setToolTip("حالت کوچک (Mini mode)")
+        self.btn_mini.setFixedHeight(32)
+        self.btn_mini.setMinimumWidth(80)
+        self.btn_mini.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_mini.setToolTip("حالت کوچک (Mini mode) - پنجره شناور")
         self.btn_mini.clicked.connect(self._show_mini)
         ctrl_layout.addWidget(self.btn_mini)
 
+        # Close button
         self.btn_close = QPushButton("✕")
         self.btn_close.setObjectName("CloseButton")
         self.btn_close.setFixedSize(32, 32)
@@ -1142,6 +1161,47 @@ class FanControllerGUI(QMainWindow):
         self.config.active_profile = pid
         self.config.save()
         self._on_set_profile(pid)
+
+    # ---------- Local hardware temperature polling ----------
+    def set_hardware_monitor(self, monitor):
+        """Set the hardware monitor so we can read local temps."""
+        self._monitor = monitor
+
+    def _poll_local_hw(self):
+        """Read CPU/GPU temps directly from local hardware (not from ESP).
+        This ensures temps display even when ESP isn't connected."""
+        monitor = getattr(self, "_monitor", None)
+        if monitor is None:
+            return
+        try:
+            import threading
+            def read_and_emit():
+                try:
+                    t = monitor.read()
+                    log.debug(f"Local HW: CPU={t.cpu:.1f}C GPU={t.gpu:.1f}C")
+                    self.local_temp_signal.emit(float(t.cpu), float(t.gpu))
+                except Exception as e:
+                    log.debug(f"Local HW read failed: {e}")
+            threading.Thread(target=read_and_emit, daemon=True).start()
+        except Exception as e:
+            log.debug(f"HW poll error: {e}")
+
+    def _apply_local_temp(self, cpu_temp: float, gpu_temp: float):
+        """Update UI with local hardware temps (called via signal)."""
+        self._last_cpu_temp = cpu_temp
+        self._last_gpu_temp = gpu_temp
+        # Update temp display in cards (fan % comes from ESP)
+        self.cards["cpu"].update_temp_only(cpu_temp)
+        self.cards["gpu"].update_temp_only(gpu_temp)
+        # Update mini widget if visible
+        if self._mini is not None and self._mini.isVisible():
+            self._mini.update_status(
+                cpu_temp, gpu_temp,
+                getattr(self, "_last_cpu_pct", 0),
+                getattr(self, "_last_gpu_pct", 0),
+                self.lbl_conn.text(),
+                self.btn_game.isChecked()
+            )
 
     # ---------- Status from ESP ----------
     def _on_status(self, s: ESPStatus):
