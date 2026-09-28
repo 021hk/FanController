@@ -567,28 +567,45 @@ class FanCard(QFrame):
 # ============================================================
 # Mini Floating Widget (compact mode)
 # ============================================================
-class MiniWidget(QFrame):
-    """Compact floating widget shown when user clicks 'minimize'."""
+class MiniWidget(QWidget):
+    """Compact floating widget shown when user clicks 'minimize'.
+
+    This is a separate top-level window (not a child of main window),
+    so it can float on the desktop independently.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
-                             Qt.WindowType.WindowStaysOnTopHint |
-                             Qt.WindowType.Tool)
+        # Window flags for a floating, frameless, always-on-top widget
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool  # don't show in taskbar
+        )
+        # Solid background (no transparency - prevents rendering issues)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setFixedSize(220, 240)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setFixedSize(240, 260)
+
+        # Apply dark theme styles
         self.setStyleSheet(f"""
-            QFrame {{
+            QWidget#MiniRoot {{
                 background-color: {CARD_BG};
                 border-radius: 18px;
-                border: 1px solid rgba(0,210,255,0.3);
+                border: 1px solid rgba(0,210,255,0.4);
             }}
-            QLabel {{ background: transparent; color: {TEXT_COLOR}; }}
+            QLabel {{
+                background: transparent;
+                color: {TEXT_COLOR};
+                font-family: {PERSIAN_FONT}, 'Segoe UI', Arial, sans-serif;
+            }}
         """)
+        self.setObjectName("MiniRoot")
 
+        # Main layout
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
 
         # Header
         header = QHBoxLayout()
@@ -597,46 +614,71 @@ class MiniWidget(QFrame):
         header.addWidget(title)
         header.addStretch()
         self.btn_expand = QPushButton("⤢")
-        self.btn_expand.setFixedSize(24, 24)
+        self.btn_expand.setFixedSize(26, 26)
+        self.btn_expand.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_expand.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(255,255,255,0.06);
-                border: none; border-radius: 12px;
+                border: none; border-radius: 13px;
                 color: {PRIMARY_COLOR};
+                font-size: 14px;
             }}
             QPushButton:hover {{ background: rgba(0,210,255,0.2); }}
         """)
+        self.btn_expand.setToolTip("بازگشت به حالت کامل")
         header.addWidget(self.btn_expand)
         layout.addLayout(header)
 
-        # Status indicator
-        self.lbl_conn = QLabel("● Connecting...")
-        self.lbl_conn.setStyleSheet("font-size: 10px; color: #aaa;")
+        # Connection status indicator
+        self.lbl_conn = QLabel("● در حال اتصال...")
+        self.lbl_conn.setStyleSheet(f"""
+            font-size: 10px;
+            color: {TEXT_MUTED};
+            padding: 4px 8px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 8px;
+        """)
         layout.addWidget(self.lbl_conn)
 
         # Compact fan stats (just CPU + GPU)
-        self.cpu_temp_lbl = QLabel("CPU: --°C  Fan: --%")
-        self.cpu_temp_lbl.setStyleSheet("font-size: 11px; padding: 4px; background: rgba(255,255,255,0.04); border-radius: 6px;")
+        self.cpu_temp_lbl = QLabel("🌡️ CPU: --°C  💨 --%")
+        self.cpu_temp_lbl.setStyleSheet("""
+            font-size: 12px;
+            padding: 8px;
+            background: rgba(0,210,255,0.06);
+            border-radius: 8px;
+            color: white;
+        """)
         layout.addWidget(self.cpu_temp_lbl)
 
-        self.gpu_temp_lbl = QLabel("GPU: --°C  Fan: --%")
-        self.gpu_temp_lbl.setStyleSheet("font-size: 11px; padding: 4px; background: rgba(255,255,255,0.04); border-radius: 6px;")
+        self.gpu_temp_lbl = QLabel("🌡️ GPU: --°C  💨 --%")
+        self.gpu_temp_lbl.setStyleSheet("""
+            font-size: 12px;
+            padding: 8px;
+            background: rgba(255,82,82,0.06);
+            border-radius: 8px;
+            color: white;
+        """)
         layout.addWidget(self.gpu_temp_lbl)
 
         layout.addStretch()
 
         # Quick Game Mode toggle
-        self.btn_game = QPushButton("🎮 Game Mode")
+        self.btn_game = QPushButton("🎮  Game Mode")
         self.btn_game.setCheckable(True)
+        self.btn_game.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_game.setStyleSheet(f"""
             QPushButton {{
                 background-color: rgba(255,82,82,0.15);
                 color: {DANGER_COLOR};
                 border: 1px solid rgba(255,82,82,0.3);
                 border-radius: 10px;
-                padding: 8px;
+                padding: 10px;
                 font-weight: bold;
                 font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255,82,82,0.25);
             }}
             QPushButton:checked {{
                 background-color: {SUCCESS_COLOR};
@@ -646,6 +688,27 @@ class MiniWidget(QFrame):
         """)
         layout.addWidget(self.btn_game)
 
+        # Drag handling
+        self._drag_offset = None
+
+    # ---------- Drag the floating widget ----------
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Only start drag if click is on background (not on a button)
+            widget = self.childAt(event.position().toPoint())
+            if widget is None:
+                self._drag_offset = event.globalPosition().toPoint() - self.pos()
+                event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+
+    # ---------- Update content ----------
     def update_status(self, cpu_temp, gpu_temp, cpu_pct, gpu_pct, conn: str, game: bool):
         # Handle None / NaN values gracefully
         try:
@@ -665,10 +728,24 @@ class MiniWidget(QFrame):
         except (TypeError, ValueError):
             gpu_pct = 0
 
-        self.cpu_temp_lbl.setText(f"CPU: {cpu_temp:.0f}°C  Fan: {cpu_pct}%")
-        self.gpu_temp_lbl.setText(f"GPU: {gpu_temp:.0f}°C  Fan: {gpu_pct}%")
+        self.cpu_temp_lbl.setText(f"🌡️ CPU: {cpu_temp:.0f}°C  💨 {cpu_pct}%")
+        self.gpu_temp_lbl.setText(f"🌡️ GPU: {gpu_temp:.0f}°C  💨 {gpu_pct}%")
         self.lbl_conn.setText(conn if conn else "● ...")
         self.btn_game.setChecked(bool(game))
+
+    # ---------- Paint rounded background ----------
+    def paintEvent(self, _event):
+        from PyQt6.QtGui import QPainterPath, QBrush, QColor, QPainter
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Draw rounded rect background
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(), 18, 18)
+        p.fillPath(path, QBrush(QColor(CARD_BG)))
+        # Cyan border
+        from PyQt6.QtGui import QPen
+        p.setPen(QPen(QColor(0, 210, 255, 100), 1))
+        p.drawPath(path)
 
 
 # ============================================================
@@ -817,21 +894,28 @@ class FanControllerGUI(QMainWindow):
 
     # ---------- Mini / Full mode ----------
     def _show_mini(self):
+        """Switch to compact floating mode."""
         try:
             if self._mini is None:
+                log.info("Creating MiniWidget...")
                 self._mini = MiniWidget()
                 self._mini.btn_expand.clicked.connect(self._show_full)
                 self._mini.btn_game.clicked.connect(self._toggle_game_mode)
-                # Initial position: bottom-right of screen
+                # Initial position: bottom-right of primary screen
                 from PyQt6.QtGui import QGuiApplication
                 screen = QGuiApplication.primaryScreen()
                 if screen:
                     g = screen.availableGeometry()
-                    self._mini.move(g.width() - 240, g.height() - 280)
+                    x = g.x() + g.width() - self._mini.width() - 30
+                    y = g.y() + g.height() - self._mini.height() - 30
+                    self._mini.move(x, y)
                 else:
                     self._mini.move(100, 100)
+                log.info(f"MiniWidget created, moving to {self._mini.pos()}")
+
+            # Hide main window
             self.hide()
-            # Sync current status to mini
+            # Sync current status to mini widget
             self._mini.update_status(
                 getattr(self, "_last_cpu_temp", 0.0),
                 getattr(self, "_last_gpu_temp", 0.0),
@@ -840,17 +924,28 @@ class FanControllerGUI(QMainWindow):
                 self.lbl_conn.text(),
                 self.btn_game.isChecked()
             )
+            # Show mini widget
             self._mini.show()
             self._mini.raise_()
+            self._mini.activateWindow()
+            log.info("Mini widget shown")
         except Exception as e:
             log.exception(f"Mini mode failed: {e}")
+            # Fallback: just hide main window, don't show mini
+            self.hide()
+            log.warning("Mini widget failed, just hiding main window")
 
     def _show_full(self):
-        if self._mini is not None:
-            self._mini.hide()
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        """Switch from mini mode back to full window."""
+        try:
+            if self._mini is not None:
+                self._mini.hide()
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            log.info("Switched back to full mode")
+        except Exception as e:
+            log.exception(f"Full mode failed: {e}")
 
     # ---------- Game mode ----------
     def _toggle_game_mode(self):

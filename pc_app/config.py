@@ -6,9 +6,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import logging
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Tuple
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 if sys.platform == "win32":
     APPDATA = Path(os.environ.get("APPDATA", str(Path.home())))
@@ -91,7 +94,7 @@ class Config:
             CONFIG_FILE.write_text(json.dumps(self.to_dict(), indent=2),
                                    encoding="utf-8")
         except Exception as e:
-            print(f"[config] save failed: {e}")
+            log.warning(f"[config] save failed: {e}")
 
     @classmethod
     def load(cls) -> "Config":
@@ -100,7 +103,7 @@ class Config:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 return cls.from_dict(data)
             except Exception as e:
-                print(f"[config] load failed ({e}), using defaults")
+                log.warning(f"[config] load failed ({e}), using defaults")
         cfg = cls()
         cfg.save()
         return cfg

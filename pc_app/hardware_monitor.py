@@ -8,6 +8,8 @@ import sys
 import time
 import subprocess
 import threading
+import logging
+log = logging.getLogger(__name__)
 from typing import Optional, Tuple, Callable
 from dataclasses import dataclass
 
@@ -31,13 +33,13 @@ class HardwareMonitor:
         self._lock = threading.Lock()
         self._init_librehardware()
         if not self._initialized:
-            print("[monitor] LHM not available, will try nvidia-smi fallback")
+            log.warning("[monitor] LHM not available, will try nvidia-smi fallback")
 
     def _init_librehardware(self):
         try:
             import clr
         except ImportError:
-            print("[monitor] pythonnet not installed: pip install pythonnet")
+            log.error("pythonnet not installed: pip install pythonnet")
             return
         search_paths = [
             os.path.dirname(os.path.abspath(__file__)),
@@ -51,7 +53,7 @@ class HardwareMonitor:
                 dll_path = candidate
                 break
         if dll_path is None:
-            print("[monitor] LibreHardwareMonitorLib.dll not found")
+            log.warning("LibreHardwareMonitorLib.dll not found")
             return
         try:
             sys.path.insert(0, os.path.dirname(dll_path))
@@ -68,9 +70,9 @@ class HardwareMonitor:
                                                 isPsuEnabled=False)
             self._computer.Open()
             self._initialized = True
-            print("[monitor] LibreHardwareMonitor initialized")
+            log.info("LibreHardwareMonitor initialized")
         except Exception as e:
-            print(f"[monitor] LHM init failed: {e}")
+            log.error(f"LHM init failed: {e}")
             self._initialized = False
 
     def read(self) -> Temps:
@@ -115,7 +117,7 @@ class HardwareMonitor:
                                 t.gpu, t.gpu_name = best[0], name + " (sub)"
                                 t.gpu_sensor_path = best[1]
             except Exception as e:
-                print(f"[monitor] read error: {e}")
+                log.warning(f"read error: {e}")
         return t
 
     @staticmethod
@@ -218,5 +220,5 @@ if __name__ == "__main__":
     m = HardwareMonitor()
     for _ in range(5):
         t = m.read()
-        print(f"CPU={t.cpu:.1f}C [{t.cpu_name}]  GPU={t.gpu:.1f}C [{t.gpu_name}]")
+        log.info(f"CPU={t.cpu:.1f}C [{t.cpu_name}]  GPU={t.gpu:.1f}C [{t.gpu_name}]")
         time.sleep(2)

@@ -8,13 +8,74 @@ import os
 import time
 import signal
 import logging
+import logging.handlers
 import threading
+from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-log = logging.getLogger("main")
+# ============================================================
+# Redirect stdout/stderr to log file (prevents CMD window from popping up
+# when some libraries like pythonnet print to console)
+# ============================================================
+def redirect_stdio():
+    """Redirect stdout/stderr to log file - called BEFORE any imports."""
+    if sys.platform != "win32":
+        return
+    try:
+        if sys.stdout is None:
+            log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "FanController"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "stdout.log"
+            sys.stdout = open(log_file, "a", encoding="utf-8", buffering=1)
+            sys.stderr = sys.stdout
+    except Exception:
+        pass
+
+# Apply redirect FIRST, before any imports that might print
+redirect_stdio()
+
+# ============================================================
+# Logging setup - write to file AND console (if available)
+# ============================================================
+def setup_logging():
+    """Configure logging to write to %APPDATA%/FanController/app.log"""
+    if sys.platform == "win32":
+        log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "FanController"
+    else:
+        log_dir = Path.home() / ".config" / "FanController"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "app.log"
+
+    # Rotating file handler (max 1MB, keep 3 backups)
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    ))
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(file_handler)
+
+    # Also try console (will silently fail in --noconsole mode, which is fine)
+    try:
+        if sys.stdout is not None:
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(logging.INFO)
+            console_handler.setFormatter(logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+            ))
+            root_logger.addHandler(console_handler)
+    except Exception:
+        pass
+
+    return logging.getLogger("main")
+
+log = setup_logging()
+log.info("=" * 50)
+log.info("Fan Controller starting up...")
+log.info("=" * 50)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
