@@ -36,20 +36,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pywin32
 
-      - name: Download LibreHardwareMonitor (full app)
+      - name: Download LibreHardwareMonitor v0.9.4 (last version with WMI namespace)
         working-directory: pc_app
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          $url = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip'
-          Write-Host "Downloading LHM..."
+          # IMPORTANT: v0.9.5+ removed WMI namespace. We need v0.9.4 for WMI.
+          # v0.9.4 is only 1.8MB (vs v0.9.6 which is 6.5MB and has no WMI)
+          $url = 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.4/LibreHardwareMonitor-net472.zip'
+          Write-Host "Downloading LHM v0.9.4 (with WMI support)..."
           Invoke-WebRequest -Uri $url -OutFile lhm.zip
           Expand-Archive -Path lhm.zip -DestinationPath lhm_extracted -Force
           
-          Get-ChildItem -Path lhm_extracted -Recurse | Where-Object {
-            $_.Extension -in '.exe', '.dll', '.config'
-          } | ForEach-Object {
-            Copy-Item $_.FullName -Destination '.' -Force
+          # Copy ALL files from LHM (exe + all DLLs - they're all needed)
+          Get-ChildItem -Path lhm_extracted -Recurse -File | ForEach-Object {
+            # Copy to root (flatten directory structure for simplicity)
+            $dest = Join-Path '.' $_.Name
+            Copy-Item $_.FullName -Destination $dest -Force
           }
           
           Remove-Item lhm.zip -Force

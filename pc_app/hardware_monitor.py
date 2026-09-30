@@ -152,7 +152,7 @@ class HardwareMonitor:
     def _launch_lhm(self):
         """Launch bundled LibreHardwareMonitor.exe as a background process.
         LHM.exe will self-elevate to admin (UAC prompt).
-        It creates WMI namespace root/LibreHardwareMonitor."""
+        It creates WMI namespace root/LibreHardwareMonitor (v0.9.4 only)."""
         lhm_exe = _find_lhm_exe()
         if lhm_exe is None:
             log.warning("LibreHardwareMonitor.exe not found in search paths")
@@ -161,6 +161,8 @@ class HardwareMonitor:
 
         log.info(f"Found LHM.exe at: {lhm_exe}")
         try:
+            # Launch LHM.exe with --run flag (silent, no window)
+            # LHM v0.9.4 supports: --run (start minimized)
             self._lhm_process = subprocess.Popen(
                 [lhm_exe, "--run"],
                 startupinfo=_startupinfo(),
@@ -169,8 +171,16 @@ class HardwareMonitor:
                 stderr=subprocess.DEVNULL,
             )
             log.info(f"LHM.exe started (PID={self._lhm_process.pid})")
-            log.info("Waiting for LHM to initialize WMI (3 seconds)...")
-            time.sleep(3)
+            log.info("Waiting for LHM to initialize WMI namespace (5 seconds)...")
+            # Give LHM more time to start (it has to self-elevate + load drivers)
+            time.sleep(5)
+            # Check if process is still alive
+            if self._lhm_process.poll() is not None:
+                log.warning(f"LHM.exe exited with code {self._lhm_process.returncode}")
+                log.warning("LHM.exe may have failed to start (UAC declined?)")
+                self._lhm_process = None
+            else:
+                log.info("LHM.exe is running, WMI namespace should be available")
         except Exception as e:
             log.error(f"LHM.exe launch failed: {e}", exc_info=True)
 
