@@ -987,6 +987,16 @@ class FanControllerGUI(QMainWindow):
         self.btn_settings.clicked.connect(self._open_settings)
         ctrl_layout.addWidget(self.btn_settings)
 
+        # Log viewer button (NEW - shows app.log in-app)
+        self.btn_log = QPushButton("📋 لاگ")
+        self.btn_log.setObjectName("MiniButton")
+        self.btn_log.setFixedHeight(32)
+        self.btn_log.setMinimumWidth(70)
+        self.btn_log.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_log.setToolTip("نمایش لاگ برنامه برای عیب‌یابی")
+        self.btn_log.clicked.connect(self._open_log_viewer)
+        ctrl_layout.addWidget(self.btn_log)
+
         # Mini mode button (with text)
         self.btn_mini = QPushButton("🗗 مینی")
         self.btn_mini.setObjectName("MiniButton")
@@ -1068,6 +1078,16 @@ class FanControllerGUI(QMainWindow):
         root.addWidget(self.chart, stretch=1)
 
     # ---------- Mini / Full mode ----------
+    def _open_log_viewer(self):
+        """Open the in-app log viewer for debugging."""
+        try:
+            from log_viewer import LogViewerDialog
+            dlg = LogViewerDialog(parent=self)
+            dlg.exec()
+        except Exception as e:
+            log.exception(f"Log viewer failed: {e}")
+            QMessageBox.critical(self, "خطا", f"باز کردن لاگ ناموفق:\n{e}")
+
     def _open_settings(self):
         """Open the settings dialog to edit fan curves."""
         try:

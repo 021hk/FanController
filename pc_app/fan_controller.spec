@@ -16,6 +16,7 @@ hiddenimports += collect_submodules('websocket')
 hiddenimports += collect_submodules('serial')
 hiddenimports += ['keyboard._winkeyboard', 'keyboard._nixkeyboard']
 hiddenimports += ['serial.tools.list_ports', 'serial.serialcli']
+hiddenimports += ['log_viewer', 'settings_dialog']  # local modules
 
 # Data files - bundle LibreHardwareMonitor.exe + all DLLs
 datas = []
