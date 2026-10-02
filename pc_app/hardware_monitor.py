@@ -253,6 +253,16 @@ class HardwareMonitor:
             "usb", "network", "ethernet", "wifi", "bluetooth",
             "psu", "battery", "acpi", "thermal zone", "system",
             "super io", "lpc", "tcase", "aux", "ambient",
+            "nvme", "sata", "pcie",        # SSD/HDD controllers
+            "temperature #", "temperature 1",  # Motherboard temp sensors
+            "memory",                     # RAM (not GPU memory)
+        ]
+
+        # CPU keywords that EXCLUDE a sensor from being a real CPU temp
+        # (Distance to TjMax is NOT a temperature - it's how far from max)
+        cpu_exclude_keywords = [
+            "distance to tjmax", "distance", "tjmax",
+            "core average", "average",
         ]
 
         for ns in namespaces:
@@ -289,35 +299,40 @@ class HardwareMonitor:
                 parent_lower = parent.lower()
                 combined = sn_lower + " " + parent_lower
 
-                # CPU: cores, package, Tctl, Tdie, and anything with "cpu" in parent
-                is_cpu = any(k in sn_lower for k in [
-                    "cpu", "core", "package", "tdie", "tctl"
-                ]) or any(k in parent_lower for k in [
-                    "cpu", "amdcpu", "intelcpu"
+                # GPU check FIRST (more specific) - if parent or name has "gpu"
+                # This must come before CPU check, because "GPU Core" contains "core"
+                is_gpu_by_parent = any(k in parent_lower for k in [
+                    "gpu", "nvidiagpu", "amdgpu", "intelgpu",
+                    "gpu-nvidia", "gpu-amd", "gpu-intel"
                 ])
-
-                if is_cpu:
-                    cpu_temps.append((val, sensor_name, parent))
-                    continue
+                is_gpu_by_name = any(k in sn_lower for k in [
+                    "gpu", "hot spot", "hotspot",
+                    "gpu core", "gpu memory", "gpu hot"
+                ])
 
                 # Check if it's NOT a GPU (motherboard, drive, etc.)
                 is_non_gpu = any(k in combined for k in non_gpu_keywords)
 
-                # GPU strict: sensor name explicitly says "GPU" or parent has gpu keyword
-                is_gpu_strict = any(k in sn_lower for k in [
-                    "gpu", "hot spot", "hotspot", "memory junction",
-                    "gpu core", "gpu memory", "gpu hot"
-                ]) or any(k in parent_lower for k in [
-                    "gpu", "nvidiagpu", "amdgpu", "intelgpu",
-                    "gpu-nvidia", "gpu-amd", "gpu-intel"
-                ])
-
-                if is_gpu_strict and not is_non_gpu:
+                if (is_gpu_by_parent or is_gpu_by_name) and not is_non_gpu:
                     gpu_temps_strict.append((val, sensor_name, parent))
-                elif not is_non_gpu:
-                    # Heuristic: non-CPU, non-motherboard temp
-                    if val > 30:
-                        gpu_temps_heuristic.append((val, sensor_name, parent))
+                    continue
+
+                # CPU: only if parent has cpu keywords AND name doesn't have GPU
+                # Exclude "Distance to TjMax" (it's not a temperature, it's delta)
+                is_cpu_parent = any(k in parent_lower for k in [
+                    "intelcpu", "amdcpu"
+                ]) or (any(k in sn_lower for k in ["cpu", "package", "tdie", "tctl"])
+                       and "gpu" not in combined)
+
+                is_cpu_excluded = any(k in sn_lower for k in cpu_exclude_keywords)
+
+                if is_cpu_parent and not is_cpu_excluded:
+                    cpu_temps.append((val, sensor_name, parent))
+                    continue
+
+                # Heuristic GPU: non-CPU, non-motherboard temp > 30°C
+                if not is_non_gpu and val > 30:
+                    gpu_temps_heuristic.append((val, sensor_name, parent))
 
             if cpu_temps or gpu_temps_strict:
                 break
