@@ -56,8 +56,10 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{group}\Game Mode ON"; Filename: "{app}\GameMode_ON.bat"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\Game Mode OFF"; Filename: "{app}\GameMode_OFF.bat"; IconFilename: "{app}\{#MyAppExeName}"
+Name: "{group}\📋 Collect Log (for support)"; Filename: "{app}\get_log.bat"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 Name: "{commondesktop}\Game Mode ON"; Filename: "{app}\GameMode_ON.bat"; Tasks: desktopicon
+Name: "{commondesktop}\📋 Collect Log (for support)"; Filename: "{app}\get_log.bat"; Tasks: desktopicon
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startup
 
 [Run]

@@ -18,10 +18,10 @@ hiddenimports += ['keyboard._winkeyboard', 'keyboard._nixkeyboard']
 hiddenimports += ['serial.tools.list_ports', 'serial.serialcli']
 hiddenimports += ['log_viewer', 'settings_dialog']  # local modules
 
-# Data files - bundle LibreHardwareMonitor.exe + all DLLs
+# Data files - bundle LibreHardwareMonitor.exe + all DLLs + get_log.bat
 datas = []
 for f in os.listdir('.'):
-    if f.lower().endswith(('.exe', '.dll', '.config')):
+    if f.lower().endswith(('.exe', '.dll', '.config', '.bat')):
         datas.append((f, '.'))
 datas += collect_data_files('PyQt6')
 
