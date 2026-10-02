@@ -239,12 +239,22 @@ class HardwareMonitor:
     def _read_ohm_wmi(self) -> Temps:
         """Query OpenHardwareMonitor / LibreHardwareMonitor WMI namespace.
         Picks the HIGHEST CPU core temperature (hottest core).
-        Also detects GPU temps using broader keyword matching."""
+        GPU detection: prefer sensors with 'gpu' in name/parent, then fallback."""
         t = Temps()
         namespaces = ["root/LibreHardwareMonitor", "root/OpenHardwareMonitor"]
         cpu_temps: List[Tuple[float, str, str]] = []
-        gpu_temps: List[Tuple[float, str, str]] = []
+        gpu_temps_strict: List[Tuple[float, str, str]] = []  # Sensor explicitly says "GPU"
+        gpu_temps_heuristic: List[Tuple[float, str, str]] = []  # Non-CPU temps
         all_temps: List[Tuple[float, str, str]] = []  # For debugging
+
+        # Keywords that EXCLUDE a sensor from being GPU
+        # (motherboard, HDD, SSD, etc.)
+        non_gpu_keywords = [
+            "motherboard", "hdd", "ssd", "disk", "drive", "fan",
+            "usb", "network", "ethernet", "wifi", "bluetooth",
+            "psu", "battery", "acpi", "thermal zone", "system",
+            "super io", "lpc", "tcase", "aux", "ambient",
+        ]
 
         for ns in namespaces:
             ps_script = (
@@ -278,6 +288,7 @@ class HardwareMonitor:
                 all_temps.append((val, sensor_name, parent))
                 sn_lower = sensor_name.lower()
                 parent_lower = parent.lower()
+                combined = sn_lower + " " + parent_lower
 
                 # CPU: cores, package, Tctl, Tdie, and anything with "cpu" in parent
                 is_cpu = any(k in sn_lower for k in [
@@ -285,12 +296,16 @@ class HardwareMonitor:
                 ]) or any(k in parent_lower for k in [
                     "cpu", "amdcpu", "intelcpu"
                 ])
-                # GPU: broader matching - LHM uses different names per vendor
-                # NVIDIA: "GPU", "GPU Hot Spot", "GPU Memory Junction"
-                # AMD: "GPU", "GPU Hot Spot", "GPU Memory"
-                # Intel: "GPU", "GPU Memory"
-                # Parent paths: /gpu-nvidia-gpuXX, /gpu-amd-gpuXX, /gpu-intel-gpuXX
-                is_gpu = any(k in sn_lower for k in [
+
+                if is_cpu:
+                    cpu_temps.append((val, sensor_name, parent))
+                    continue
+
+                # Check if it's NOT a GPU (motherboard, drive, etc.)
+                is_non_gpu = any(k in combined for k in non_gpu_keywords)
+
+                # GPU strict: sensor name explicitly says "GPU" or parent has gpu keyword
+                is_gpu_strict = any(k in sn_lower for k in [
                     "gpu", "hot spot", "hotspot", "memory junction",
                     "gpu core", "gpu memory", "gpu hot"
                 ]) or any(k in parent_lower for k in [
@@ -298,48 +313,46 @@ class HardwareMonitor:
                     "gpu-nvidia", "gpu-amd", "gpu-intel"
                 ])
 
-                if is_cpu:
-                    cpu_temps.append((val, sensor_name, parent))
-                elif is_gpu:
-                    gpu_temps.append((val, sensor_name, parent))
+                if is_gpu_strict and not is_non_gpu:
+                    gpu_temps_strict.append((val, sensor_name, parent))
+                elif not is_non_gpu:
+                    # Heuristic: non-CPU, non-motherboard temp
+                    # Could be GPU if it has a high value (>30°C typical for GPU)
+                    if val > 30:
+                        gpu_temps_heuristic.append((val, sensor_name, parent))
 
-            if cpu_temps or gpu_temps:
+            if cpu_temps or gpu_temps_strict:
                 break
 
         # Log ALL detected sensors for debugging
         if all_temps:
             log.info(f"LHM WMI: detected {len(all_temps)} temperature sensors:")
-            for val, name, parent in all_temps[:15]:  # Log first 15
+            for val, name, parent in all_temps[:20]:
                 log.info(f"  {val:.1f}°C | {name} | {parent}")
 
-        # Pick the HIGHEST temperature (hottest core)
+        # Pick the HIGHEST temperature (hottest core) for CPU
         if cpu_temps:
             cpu_temps.sort(key=lambda x: -x[0])
             t.cpu = cpu_temps[0][0]
             t.cpu_name = cpu_temps[0][2] or cpu_temps[0][1]
             t.cpu_sensor_path = "LHM-WMI"
             log.debug(f"CPU: {t.cpu:.1f}°C from {cpu_temps[0][1]} ({len(cpu_temps)} cores)")
-        if gpu_temps:
-            gpu_temps.sort(key=lambda x: -x[0])
-            t.gpu = gpu_temps[0][0]
-            t.gpu_name = gpu_temps[0][2] or gpu_temps[0][1]
+
+        # GPU: prefer strict matches, then heuristic
+        if gpu_temps_strict:
+            gpu_temps_strict.sort(key=lambda x: -x[0])
+            t.gpu = gpu_temps_strict[0][0]
+            t.gpu_name = gpu_temps_strict[0][2] or gpu_temps_strict[0][1]
             t.gpu_sensor_path = "LHM-WMI"
-            log.debug(f"GPU: {t.gpu:.1f}°C from {gpu_temps[0][1]} ({len(gpu_temps)} sensors)")
-        elif all_temps:
-            # If we detected temps but none matched GPU keywords, try a heuristic:
-            # Any sensor whose name or parent doesn't contain CPU keywords
-            # is probably a GPU temp (or motherboard, but rare to be high)
-            non_cpu_temps = [x for x in all_temps
-                              if not any(k in (x[1] + " " + x[2]).lower()
-                                         for k in ["cpu", "core", "package",
-                                                    "tdie", "tctl", "amdcpu", "intelcpu"])]
-            if non_cpu_temps:
-                # Pick the highest non-CPU temp as GPU candidate
-                non_cpu_temps.sort(key=lambda x: -x[0])
-                t.gpu = non_cpu_temps[0][0]
-                t.gpu_name = non_cpu_temps[0][2] or non_cpu_temps[0][1]
-                t.gpu_sensor_path = "LHM-WMI-heuristic"
-                log.info(f"GPU (heuristic): {t.gpu:.1f}°C from {non_cpu_temps[0][1]}")
+            log.debug(f"GPU (strict): {t.gpu:.1f}°C from {gpu_temps_strict[0][1]} "
+                      f"({len(gpu_temps_strict)} sensors)")
+        elif gpu_temps_heuristic:
+            gpu_temps_heuristic.sort(key=lambda x: -x[0])
+            t.gpu = gpu_temps_heuristic[0][0]
+            t.gpu_name = gpu_temps_heuristic[0][2] or gpu_temps_heuristic[0][1]
+            t.gpu_sensor_path = "LHM-WMI-heuristic"
+            log.info(f"GPU (heuristic): {t.gpu:.1f}°C from {gpu_temps_heuristic[0][1]} "
+                     f"({len(gpu_temps_heuristic)} candidates)")
 
         return t
 
