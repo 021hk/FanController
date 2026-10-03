@@ -64,6 +64,9 @@ class ESPClient:
         self._serial = None
         self._serial_lock = threading.Lock()
         self._last_status: Optional[ESPStatus] = None
+        # Auto-reconnect flag
+        self._auto_reconnect = True
+        self._reconnect_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         self._stop_event.clear()
@@ -71,6 +74,44 @@ class ESPClient:
             self._start_ws_thread()
         else:
             self._connect_usb()
+        # Start auto-reconnect watchdog
+        self._reconnect_thread = threading.Thread(target=self._reconnect_loop, daemon=True)
+        self._reconnect_thread.start()
+
+    def reconnect(self) -> None:
+        """Manually trigger a reconnect."""
+        log.info("Manual reconnect triggered")
+        # Close existing connections
+        if self._ws:
+            try: self._ws.close()
+            except: pass
+        if self._serial:
+            try: self._serial.close()
+            except: pass
+            self._serial = None
+        self.usb_port = ""  # Force re-detection
+        # Restart
+        self._stop_event.set()
+        time.sleep(0.5)
+        self._stop_event.clear()
+        if self.use_wifi:
+            self._start_ws_thread()
+        else:
+            self._connect_usb()
+
+    def _reconnect_loop(self):
+        """Watchdog that reconnects if state is DISCONNECTED for too long."""
+        while not self._stop_event.is_set():
+            time.sleep(5)
+            if self._state == ConnState.DISCONNECTED and self._auto_reconnect:
+                log.info("Auto-reconnect: state is DISCONNECTED, retrying...")
+                try:
+                    if self.use_wifi:
+                        self._start_ws_thread()
+                    else:
+                        self._connect_usb()
+                except Exception as e:
+                    log.debug(f"Auto-reconnect failed: {e}")
 
     def stop(self) -> None:
         self._stop_event.set()

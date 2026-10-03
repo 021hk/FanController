@@ -18,7 +18,7 @@ import collections
 import time
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QVariantAnimation
 from PyQt6.QtGui import (QPainter, QColor, QPen, QBrush, QFont, QPainterPath,
                           QLinearGradient, QRadialGradient, QFontDatabase)
 from PyQt6.QtWidgets import (
@@ -576,8 +576,143 @@ class FanCard(QFrame):
 
 
 # ============================================================
-# Mini Spinning Fan Circle Widget (CPU and GPU)
+# Connection Indicator (blinking when connected)
 # ============================================================
+class ConnectionIndicator(QWidget):
+    """A blinking LED-style indicator that shows connection status.
+    - Red:    Disconnected
+    - Yellow: Connecting (blinking)
+    - Green:  Connected (blinking slowly)
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(24, 24)
+        self._color = "red"
+        self._on = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._toggle)
+        self._timer.start(500)  # Blink every 500ms
+        self._connected = False
+
+    def set_connected(self, connected: bool):
+        self._connected = connected
+        if connected:
+            self._color = "green"
+        else:
+            self._color = "red"
+        self.update()
+
+    def _toggle(self):
+        self._on = not self._on
+        self.update()
+
+    def paintEvent(self, _evt):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        radius = min(w, h) / 2 - 2
+
+        # Determine actual color (blink effect)
+        if self._color == "green":
+            # Slow blink when connected (3s cycle)
+            actual_color = QColor(76, 175, 80) if (int(time.time()) % 2 == 0) else QColor(129, 199, 132)
+        elif self._color == "yellow":
+            # Fast blink when connecting
+            actual_color = QColor(255, 193, 7) if self._on else QColor(121, 85, 0)
+        else:
+            # Steady red when disconnected
+            actual_color = QColor(244, 67, 54)
+
+        # Draw glow
+        if self._color == "green":
+            glow = QColor(actual_color)
+            glow.setAlpha(60)
+            p.setBrush(QBrush(glow))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(cx, cy), radius + 2, radius + 2)
+
+        # Draw main circle
+        p.setBrush(QBrush(actual_color))
+        p.setPen(QPen(QColor(0, 0, 0, 100), 1))
+        p.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        # Draw highlight
+        highlight = QColor(255, 255, 255, 80)
+        p.setBrush(QBrush(highlight))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx - radius/3, cy - radius/3), radius/3, radius/3)
+
+
+# ============================================================
+# Fan Output Widget (visual fan speed display)
+# ============================================================
+class FanOutputWidget(QWidget):
+    """Shows fan output as a circular gauge with percentage."""
+
+    def __init__(self, label: str, color: str, parent=None, size: int = 100):
+        super().__init__(parent)
+        self.setFixedSize(size, size + 20)
+        self._label = label
+        self._color = QColor(color)
+        self._percent = 0
+        self._target_percent = 0
+        self._animation = QVariantAnimation(self)
+        self._animation.valueChanged.connect(self._on_animation)
+        self._animation.setDuration(300)
+
+    def _on_animation(self, val):
+        self._percent = val
+        self.update()
+
+    def set_percent(self, percent: int):
+        percent = max(0, min(100, int(percent)))
+        if percent != self._target_percent:
+            self._target_percent = percent
+            self._animation.stop()
+            self._animation.setStartValue(self._percent)
+            self._animation.setEndValue(float(percent))
+            self._animation.start()
+
+    def paintEvent(self, _evt):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        h = self.height() - 20
+        cx, cy = w / 2, h / 2
+        radius = min(w, h) / 2 - 4
+
+        # Background circle
+        p.setBrush(QBrush(QColor(30, 30, 30)))
+        p.setPen(QPen(QColor(60, 60, 60), 2))
+        p.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        # Progress arc (fan speed)
+        if self._percent > 0:
+            from PyQt6.QtGui import QPen, QConicalGradient
+            pen = QPen(self._color, 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            # Draw arc from top, clockwise
+            start_angle = 90 * 16  # Start from top
+            span_angle = int(-self._percent * 3.6 * 16)  # Negative = clockwise
+            p.drawArc(QRectF(cx - radius + 4, cy - radius + 4,
+                             2 * (radius - 4), 2 * (radius - 4)),
+                      start_angle, span_angle)
+
+        # Center percentage text
+        p.setPen(self._color if self._percent > 0 else QColor(120, 120, 120))
+        p.setFont(QFont("Tahoma", 14, QFont.Weight.Bold))
+        text = f"{int(self._percent)}%"
+        p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, text)
+
+        # Label below
+        p.setPen(QColor(180, 180, 180))
+        p.setFont(QFont("Tahoma", 9))
+        p.drawText(QRectF(0, h, w, 20), Qt.AlignmentFlag.AlignCenter, self._label)
+
+
+from PyQt6.QtCore import QVariantAnimation
 class MiniFanCircle(QWidget):
     """A single circular animated fan blade indicator for mini mode."""
 
@@ -1021,11 +1156,25 @@ class FanControllerGUI(QMainWindow):
         # ---------- Status bar (connection + profile) ----------
         status_row = QHBoxLayout()
 
+        # Connection indicator (blinking LED)
+        self.conn_indicator = ConnectionIndicator()
+        status_row.addWidget(self.conn_indicator)
+
         status_row.addWidget(QLabel("🔗 اتصال:"))
         self.lbl_conn = QLabel("در حال اتصال...")
         self.lbl_conn.setObjectName("ConnStatus")
         self.lbl_conn.setStyleSheet(f"color: {TEXT_MUTED};")
         status_row.addWidget(self.lbl_conn)
+
+        # Reconnect button
+        self.btn_reconnect = QPushButton("🔄")
+        self.btn_reconnect.setObjectName("MiniButton")
+        self.btn_reconnect.setFixedSize(32, 32)
+        self.btn_reconnect.setToolTip("اتصال مجدد")
+        self.btn_reconnect.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reconnect.clicked.connect(self._reconnect)
+        status_row.addWidget(self.btn_reconnect)
+
         status_row.addStretch()
 
         status_row.addWidget(QLabel("📊 پروفایل:"))
@@ -1061,6 +1210,21 @@ class FanControllerGUI(QMainWindow):
         mode_row.addWidget(self.btn_game)
 
         root.addLayout(mode_row)
+
+        # ---------- Fan Output Display (visual gauges) ----------
+        output_title = QLabel("🎛️ خروجی فن‌ها")
+        output_title.setStyleSheet(f"color: {PRIMARY_COLOR}; font-weight: bold; margin-top: 10px;")
+        root.addWidget(output_title)
+
+        output_row = QHBoxLayout()
+        output_row.setSpacing(20)
+        self.fan_output_cpu = FanOutputWidget("CPU Fan", PRIMARY_COLOR, size=100)
+        self.fan_output_gpu = FanOutputWidget("GPU Fan", "#ff5252", size=100)
+        output_row.addStretch()
+        output_row.addWidget(self.fan_output_cpu)
+        output_row.addWidget(self.fan_output_gpu)
+        output_row.addStretch()
+        root.addLayout(output_row)
 
         # ---------- Fan cards grid (2 fans: CPU + GPU) ----------
         cards_frame = QFrame()
@@ -1282,6 +1446,10 @@ class FanControllerGUI(QMainWindow):
         self.cards["cpu"].update_status(cpu_temp, cpu_pct, cpu_mode)
         self.cards["gpu"].update_status(gpu_temp, gpu_pct, gpu_mode)
 
+        # Update fan output gauges (visual display)
+        self.fan_output_cpu.set_percent(cpu_pct)
+        self.fan_output_gpu.set_percent(gpu_pct)
+
         # Chart
         self.chart.push(cpu_temp, gpu_temp)
 
@@ -1301,17 +1469,28 @@ class FanControllerGUI(QMainWindow):
     def _apply_state(self, state_int: int):
         state = ConnState(state_int)
         colors = {
-            ConnState.DISCONNECTED: ("● قطع", DANGER_COLOR),
-            ConnState.WS:           (f"● WebSocket @ {self.config.esp_ip}", SUCCESS_COLOR),
-            ConnState.HTTP:         (f"● HTTP @ {self.config.esp_ip}", WARN_COLOR),
-            ConnState.USB:          (f"● USB @ {self.config.usb_port}", PRIMARY_COLOR),
+            ConnState.DISCONNECTED: ("● قطع", DANGER_COLOR, False),
+            ConnState.WS:           (f"● WebSocket @ {self.config.esp_ip}", SUCCESS_COLOR, True),
+            ConnState.HTTP:         (f"● HTTP @ {self.config.esp_ip}", WARN_COLOR, True),
+            ConnState.USB:          (f"● USB @ {self.config.usb_port}", PRIMARY_COLOR, True),
         }
-        text, color = colors[state]
+        text, color, connected = colors[state]
         self.lbl_conn.setText(text)
         self.lbl_conn.setStyleSheet(
             f"color: {color}; font-weight: bold; padding: 4px 12px;"
             f" border-radius: 10px; background: rgba(255,255,255,0.05);")
+        # Update blinking indicator
+        self.conn_indicator.set_connected(connected)
         self._mini.lbl_conn.setText(text)
+
+    def _reconnect(self):
+        """Manually trigger reconnection to ESP8266."""
+        log.info("Manual reconnect from GUI")
+        self.lbl_conn.setText("● در حال اتصال مجدد...")
+        try:
+            self.client.reconnect()
+        except Exception as e:
+            log.warning(f"Reconnect failed: {e}")
 
     def _poll_once(self):
         pass
