@@ -18,7 +18,7 @@ import collections
 import time
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QVariantAnimation
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF
 from PyQt6.QtGui import (QPainter, QColor, QPen, QBrush, QFont, QPainterPath,
                           QLinearGradient, QRadialGradient, QFontDatabase)
 from PyQt6.QtWidgets import (
@@ -657,23 +657,10 @@ class FanOutputWidget(QWidget):
         self._label = label
         self._color = QColor(color)
         self._percent = 0
-        self._target_percent = 0
-        self._animation = QVariantAnimation(self)
-        self._animation.valueChanged.connect(self._on_animation)
-        self._animation.setDuration(300)
-
-    def _on_animation(self, val):
-        self._percent = val
-        self.update()
 
     def set_percent(self, percent: int):
-        percent = max(0, min(100, int(percent)))
-        if percent != self._target_percent:
-            self._target_percent = percent
-            self._animation.stop()
-            self._animation.setStartValue(self._percent)
-            self._animation.setEndValue(float(percent))
-            self._animation.start()
+        self._percent = max(0, min(100, int(percent)))
+        self.update()
 
     def paintEvent(self, _evt):
         p = QPainter(self)
@@ -690,12 +677,10 @@ class FanOutputWidget(QWidget):
 
         # Progress arc (fan speed)
         if self._percent > 0:
-            from PyQt6.QtGui import QPen, QConicalGradient
             pen = QPen(self._color, 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
-            # Draw arc from top, clockwise
-            start_angle = 90 * 16  # Start from top
-            span_angle = int(-self._percent * 3.6 * 16)  # Negative = clockwise
+            start_angle = 90 * 16
+            span_angle = int(-self._percent * 3.6 * 16)
             p.drawArc(QRectF(cx - radius + 4, cy - radius + 4,
                              2 * (radius - 4), 2 * (radius - 4)),
                       start_angle, span_angle)
@@ -712,7 +697,6 @@ class FanOutputWidget(QWidget):
         p.drawText(QRectF(0, h, w, 20), Qt.AlignmentFlag.AlignCenter, self._label)
 
 
-from PyQt6.QtCore import QVariantAnimation
 class MiniFanCircle(QWidget):
     """A single circular animated fan blade indicator for mini mode."""
 
