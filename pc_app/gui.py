@@ -646,27 +646,32 @@ class ConnectionIndicator(QWidget):
 
 
 # ============================================================
-# Fan Output Widget (visual fan speed display)
+# Fan Output Widget (visual fan speed display + RPM)
 # ============================================================
 class FanOutputWidget(QWidget):
-    """Shows fan output as a circular gauge with percentage."""
+    """Shows fan output as a circular gauge with percentage and RPM."""
 
     def __init__(self, label: str, color: str, parent=None, size: int = 100):
         super().__init__(parent)
-        self.setFixedSize(size, size + 20)
+        self.setFixedSize(size, size + 35)
         self._label = label
         self._color = QColor(color)
         self._percent = 0
+        self._rpm = 0
 
     def set_percent(self, percent: int):
         self._percent = max(0, min(100, int(percent)))
+        self.update()
+
+    def set_rpm(self, rpm: int):
+        self._rpm = max(0, int(rpm))
         self.update()
 
     def paintEvent(self, _evt):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w = self.width()
-        h = self.height() - 20
+        h = self.height() - 35
         cx, cy = w / 2, h / 2
         radius = min(w, h) / 2 - 4
 
@@ -690,6 +695,12 @@ class FanOutputWidget(QWidget):
         p.setFont(QFont("Tahoma", 14, QFont.Weight.Bold))
         text = f"{int(self._percent)}%"
         p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, text)
+
+        # RPM display below percentage
+        p.setPen(QColor(200, 200, 200))
+        p.setFont(QFont("Tahoma", 8))
+        rpm_text = f"{self._rpm} RPM"
+        p.drawText(QRectF(0, h - 8, w, 16), Qt.AlignmentFlag.AlignCenter, rpm_text)
 
         # Label below
         p.setPen(QColor(180, 180, 180))
@@ -1405,8 +1416,10 @@ class FanControllerGUI(QMainWindow):
         self.status_signal.emit({
             "cpu_pct": s.cpu_pct, "gpu_pct": s.gpu_pct,
             "cpu_temp": s.cpu_temp, "gpu_temp": s.gpu_temp,
+            "cpu_rpm": s.cpu_rpm, "gpu_rpm": s.gpu_rpm,
             "cpu_mode": s.cpu_mode, "gpu_mode": s.gpu_mode,
             "profile": s.profile, "game": s.game,
+            "auto": s.auto_mode,
         })
 
     def _on_state_change(self, state: ConnState):
@@ -1417,6 +1430,8 @@ class FanControllerGUI(QMainWindow):
         gpu_temp = d.get("gpu_temp", 0)
         cpu_pct = d.get("cpu_pct", 0)
         gpu_pct = d.get("gpu_pct", 0)
+        cpu_rpm = d.get("cpu_rpm", 0)
+        gpu_rpm = d.get("gpu_rpm", 0)
         cpu_mode = d.get("cpu_mode", 0)
         gpu_mode = d.get("gpu_mode", 0)
 
@@ -1425,14 +1440,18 @@ class FanControllerGUI(QMainWindow):
         self._last_gpu_temp = gpu_temp
         self._last_cpu_pct = cpu_pct
         self._last_gpu_pct = gpu_pct
+        self._last_cpu_rpm = cpu_rpm
+        self._last_gpu_rpm = gpu_rpm
 
         # Update cards
         self.cards["cpu"].update_status(cpu_temp, cpu_pct, cpu_mode)
         self.cards["gpu"].update_status(gpu_temp, gpu_pct, gpu_mode)
 
-        # Update fan output gauges (visual display)
+        # Update fan output gauges (visual display + RPM)
         self.fan_output_cpu.set_percent(cpu_pct)
+        self.fan_output_cpu.set_rpm(cpu_rpm)
         self.fan_output_gpu.set_percent(gpu_pct)
+        self.fan_output_gpu.set_rpm(gpu_rpm)
 
         # Chart
         self.chart.push(cpu_temp, gpu_temp)
@@ -1443,6 +1462,12 @@ class FanControllerGUI(QMainWindow):
         self.btn_game.setText(
             "🎮  خاموش کردن حالت گیم" if game else
             "🎮  فعال‌سازی حالت گیم (همه فن‌ها ۱۰۰٪)")
+
+        # Auto mode button
+        auto = bool(d.get("auto", True))
+        self.btn_auto.setChecked(auto)
+        self.btn_auto.setText("🔄 حالت اتوماتیک: روشن" if auto
+                              else "🔄 حالت اتوماتیک: خاموش")
 
         # Mini widget (if visible)
         if self._mini is not None and self._mini.isVisible():

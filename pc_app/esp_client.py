@@ -27,10 +27,13 @@ class ESPStatus:
     gpu_pct: int = 0
     cpu_temp: float = 0.0
     gpu_temp: float = 0.0
+    cpu_rpm: int = 0   # NEW: RPM from tach sensor
+    gpu_rpm: int = 0   # NEW: RPM from tach sensor
     cpu_mode: int = 0
     gpu_mode: int = 0
     profile: int = 1
     game: bool = False
+    auto_mode: bool = True  # NEW: auto mode state
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -70,10 +73,16 @@ class ESPClient:
 
     def start(self) -> None:
         self._stop_event.clear()
-        if self.use_wifi:
-            self._start_ws_thread()
+        # PRIORITY: Try USB first (more reliable, no network needed)
+        log.info("Starting ESPClient - trying USB first...")
+        if self._connect_usb():
+            log.info("USB connected! Using USB serial mode.")
         else:
-            self._connect_usb()
+            log.info("USB not available, falling back to WiFi.")
+            if self.use_wifi:
+                self._start_ws_thread()
+            else:
+                log.warning("WiFi disabled and USB failed - no connection")
         # Start auto-reconnect watchdog
         self._reconnect_thread = threading.Thread(target=self._reconnect_loop, daemon=True)
         self._reconnect_thread.start()
@@ -100,18 +109,25 @@ class ESPClient:
             self._connect_usb()
 
     def _reconnect_loop(self):
-        """Watchdog that reconnects if state is DISCONNECTED for too long."""
+        """Watchdog that reconnects if state is DISCONNECTED for too long.
+        Tries USB first, then WiFi."""
         while not self._stop_event.is_set():
             time.sleep(5)
             if self._state == ConnState.DISCONNECTED and self._auto_reconnect:
-                log.info("Auto-reconnect: state is DISCONNECTED, retrying...")
+                log.info("Auto-reconnect: trying USB first...")
                 try:
-                    if self.use_wifi:
-                        self._start_ws_thread()
-                    else:
-                        self._connect_usb()
+                    if self._connect_usb():
+                        log.info("Auto-reconnect: USB connected!")
+                        continue
                 except Exception as e:
-                    log.debug(f"Auto-reconnect failed: {e}")
+                    log.debug(f"Auto-reconnect USB failed: {e}")
+                # If USB failed, try WiFi
+                if self.use_wifi:
+                    log.info("Auto-reconnect: trying WiFi...")
+                    try:
+                        self._start_ws_thread()
+                    except Exception as e:
+                        log.debug(f"Auto-reconnect WiFi failed: {e}")
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -313,10 +329,13 @@ class ESPClient:
             gpu_pct=int(msg.get("gpu_pct", 0)),
             cpu_temp=float(msg.get("cpu_temp", 0)),
             gpu_temp=float(msg.get("gpu_temp", 0)),
+            cpu_rpm=int(msg.get("cpu_rpm", 0)),
+            gpu_rpm=int(msg.get("gpu_rpm", 0)),
             cpu_mode=int(msg.get("cpu_mode", 0)),
             gpu_mode=int(msg.get("gpu_mode", 0)),
             profile=int(msg.get("profile", 1)),
             game=bool(msg.get("game", False)),
+            auto_mode=bool(msg.get("auto", True)),
             raw=msg,
         )
         self._last_status = s

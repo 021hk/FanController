@@ -45,10 +45,12 @@ IPAddress AP_SUBNET  (255, 255, 255, 0);
 // ============================================================
 //  PINS (NodeMCU V3)
 // ============================================================
-#define FAN_CPU_PIN     5   // D1 = GPIO5
-#define FAN_GPU_PIN     4   // D2 = GPIO4
-#define BUTTON_PIN      14  // D5 = GPIO14
-#define STATUS_LED      2   // D4 = GPIO2 (onboard LED, active low)
+#define FAN_CPU_PIN     5   // D1 = GPIO5  (PWM output)
+#define FAN_GPU_PIN     4   // D2 = GPIO4  (PWM output)
+#define FAN_CPU_TACH    12  // D6 = GPIO12 (RPM input from CPU fan tach)
+#define FAN_GPU_TACH    13  // D7 = GPIO13 (RPM input from GPU fan tach)
+#define BUTTON_PIN      14  // D5 = GPIO14 (Game Mode button)
+#define STATUS_LED      2   // D4 = GPIO2  (onboard LED, active low)
 
 // ============================================================
 //  CONSTANTS
@@ -88,12 +90,56 @@ uint8_t   lastTemps[NUM_FANS] = {40, 40};
 uint8_t   activeProfile = 1;
 bool      gameMode = false;
 bool      autoMode = true;  // AUTO mode enabled by default
+bool      usbFallback = false;  // True when USB serial is active (no WiFi)
 unsigned long lastPCContact = 0;
 unsigned long lastButtonPress = 0;
 bool      lastButtonState = HIGH;
 
+// RPM counting (tach pulses via interrupt)
+volatile unsigned int tachCounts[NUM_FANS] = {0, 0};
+unsigned long lastRPMCheck = 0;
+uint16_t fanRPM[NUM_FANS] = {0, 0};
+
 ESP8266WebServer http(HTTP_PORT);
 WebSocketsServer  ws(WS_PORT);
+
+// ============================================================
+//  TACH INTERRUPT HANDLERS (RPM measurement)
+// ============================================================
+// PC fan tachometer: 2 pulses per revolution
+// We count pulses, then RPM = (pulses / 2) * (60 / time_window_sec)
+// Standard: pulses in 1 second / 2 = RPS, * 60 = RPM
+
+void IRAM_ATTR cpuTachISR() {
+  tachCounts[FAN_CPU]++;
+}
+
+void IRAM_ATTR gpuTachISR() {
+  tachCounts[FAN_GPU]++;
+}
+
+void updateRPM() {
+  // Called periodically to compute RPM from pulse counts
+  unsigned long now = millis();
+  if (now - lastRPMCheck < 1000) return;  // 1 second window
+  unsigned long elapsed = now - lastRPMCheck;
+  lastRPMCheck = now;
+
+  // Disable interrupts briefly to read counts
+  noInterrupts();
+  unsigned int cpuCount = tachCounts[FAN_CPU];
+  unsigned int gpuCount = tachCounts[FAN_GPU];
+  tachCounts[FAN_CPU] = 0;
+  tachCounts[FAN_GPU] = 0;
+  interrupts();
+
+  // RPM = (pulses / 2) * (60000 / elapsed_ms)
+  // Most PC fans: 2 pulses per revolution
+  fanRPM[FAN_CPU] = (uint16_t)((cpuCount * 60000UL) / (2UL * elapsed));
+  fanRPM[FAN_GPU] = (uint16_t)((gpuCount * 60000UL) / (2UL * elapsed));
+
+  Serial.printf("[RPM] CPU=%u  GPU=%u\n", fanRPM[FAN_CPU], fanRPM[FAN_GPU]);
+}
 
 // ============================================================
 //  SETUP
@@ -107,6 +153,14 @@ void setup() {
   pinMode(FAN_GPU_PIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(STATUS_LED, OUTPUT);
+
+  // Tach pins (input with pullup - tach signal is open-collector)
+  pinMode(FAN_CPU_TACH, INPUT_PULLUP);
+  pinMode(FAN_GPU_TACH, INPUT_PULLUP);
+  // Attach interrupts for RPM measurement (FALLING edge = 1 pulse per rev on most fans)
+  attachInterrupt(digitalPinToInterrupt(FAN_CPU_TACH), cpuTachISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(FAN_GPU_TACH), gpuTachISR, FALLING);
+  lastRPMCheck = millis();
 
   analogWriteFreq(PWM_FREQ_HZ);
   analogWriteRange(PWM_RANGE);
@@ -174,6 +228,7 @@ void loop() {
   processSerial();
   checkButton();
   checkWatchdog();
+  updateRPM();  // Update RPM every 1 second
 }
 
 // ============================================================
@@ -344,19 +399,26 @@ void handleWebSocket(uint8_t num, WStype_t type, uint8_t *payload, size_t length
 
 void sendStateToClients() {
   StaticJsonDocument<512> doc;
-  doc["type"]     = "status";
-  doc["cpu_pct"]  = fans[FAN_CPU].percent;
-  doc["gpu_pct"]  = fans[FAN_GPU].percent;
-  doc["cpu_temp"] = lastTemps[FAN_CPU];
-  doc["gpu_temp"] = lastTemps[FAN_GPU];
-  doc["cpu_mode"] = (uint8_t)fans[FAN_CPU].mode;
-  doc["gpu_mode"] = (uint8_t)fans[FAN_GPU].mode;
-  doc["profile"]  = activeProfile;
-  doc["game"]     = gameMode;
-  doc["auto"]     = autoMode;
+  doc["type"]      = "status";
+  doc["cpu_pct"]   = fans[FAN_CPU].percent;
+  doc["gpu_pct"]   = fans[FAN_GPU].percent;
+  doc["cpu_temp"]  = lastTemps[FAN_CPU];
+  doc["gpu_temp"]  = lastTemps[FAN_GPU];
+  doc["cpu_rpm"]   = fanRPM[FAN_CPU];
+  doc["gpu_rpm"]   = fanRPM[FAN_GPU];
+  doc["cpu_mode"]  = (uint8_t)fans[FAN_CPU].mode;
+  doc["gpu_mode"]  = (uint8_t)fans[FAN_GPU].mode;
+  doc["profile"]   = activeProfile;
+  doc["game"]      = gameMode;
+  doc["auto"]      = autoMode;
   String out;
   serializeJson(doc, out);
   ws.broadcastTXT(out);
+  // Also send via USB serial if connected
+  if (usbFallback) {
+    serializeJson(doc, Serial);
+    Serial.println();
+  }
 }
 
 // ============================================================
@@ -369,6 +431,8 @@ void handleStatus() {
   doc["gpu_pct"]  = fans[FAN_GPU].percent;
   doc["cpu_temp"] = lastTemps[FAN_CPU];
   doc["gpu_temp"] = lastTemps[FAN_GPU];
+  doc["cpu_rpm"]  = fanRPM[FAN_CPU];
+  doc["gpu_rpm"]  = fanRPM[FAN_GPU];
   doc["cpu_mode"] = (uint8_t)fans[FAN_CPU].mode;
   doc["gpu_mode"] = (uint8_t)fans[FAN_GPU].mode;
   doc["profile"]  = activeProfile;
