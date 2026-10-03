@@ -1423,7 +1423,11 @@ class FanControllerGUI(QMainWindow):
         })
 
     def _on_state_change(self, state: ConnState):
-        self.state_signal.emit(int(state))
+        # Use .value to get the integer value of the Enum
+        try:
+            self.state_signal.emit(int(state.value))
+        except (TypeError, AttributeError) as e:
+            log.warning(f"_on_state_change: failed to emit state {state}: {e}")
 
     def _apply_status(self, d: dict):
         cpu_temp = d.get("cpu_temp", 0)
