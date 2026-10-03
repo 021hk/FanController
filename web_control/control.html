@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fan Controller - کنترل پنل وب</title>
+    <style>
+        :root {
+            --primary: #00d2ff;
+            --secondary: #3a7bd5;
+            --bg: #121212;
+            --card: #1e1e1e;
+            --text: #ffffff;
+            --muted: #aaaaaa;
+            --danger: #ff5252;
+            --success: #4caf50;
+            --warning: #ffc107;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Tahoma', 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        header { text-align: center; margin-bottom: 30px; }
+        h1 { color: var(--primary); font-size: 28px; }
+        .subtitle { color: var(--muted); margin-top: 8px; }
+
+        .conn-bar {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .conn-indicator {
+            width: 16px; height: 16px;
+            border-radius: 50%;
+            background: var(--danger);
+            transition: background 0.3s;
+        }
+        .conn-indicator.connected {
+            background: var(--success);
+            box-shadow: 0 0 12px var(--success);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        .conn-text { flex: 1; font-size: 14px; }
+        input[type="text"] {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: var(--primary);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-family: inherit;
+            width: 180px;
+        }
+        button {
+            background: var(--primary);
+            color: var(--bg);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        button:hover { background: #00b8d9; }
+        button.danger { background: var(--danger); color: white; }
+        button.danger:hover { background: #d32f2f; }
+        button.success { background: var(--success); color: white; }
+
+        .cards {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 700px) {
+            .cards { grid-template-columns: 1fr; }
+        }
+        .card {
+            background: var(--card);
+            border-radius: 16px;
+            padding: 20px;
+            text-align: center;
+        }
+        .fan-circle {
+            width: 120px; height: 120px;
+            margin: 0 auto 16px;
+            position: relative;
+        }
+        .fan-circle svg { width: 100%; height: 100%; }
+        .fan-blades {
+            transform-origin: 100px 100px;
+            animation: spin 0s linear infinite;
+        }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .stat-row {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 12px;
+            gap: 8px;
+        }
+        .stat {
+            background: rgba(255,255,255,0.04);
+            border-radius: 10px;
+            padding: 10px;
+            flex: 1;
+        }
+        .stat-label { font-size: 11px; color: var(--muted); }
+        .stat-value {
+            font-size: 22px;
+            font-weight: bold;
+            color: var(--primary);
+            margin-top: 4px;
+        }
+        .stat-value.gpu { color: var(--danger); }
+        .slider-row { margin-top: 16px; }
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 8px;
+            background: #050505;
+            border-radius: 4px;
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px; height: 20px;
+            border-radius: 50%;
+            background: var(--primary);
+            cursor: pointer;
+        }
+        .modes {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .modes button { flex: 1; min-width: 120px; }
+        .log {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 12px;
+            margin-top: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            color: var(--muted);
+        }
+        .log-line { margin-bottom: 4px; }
+        .log-line.info { color: var(--primary); }
+        .log-line.error { color: var(--danger); }
+        .log-line.success { color: var(--success); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎮 Fan Controller</h1>
+            <p class="subtitle">کنترل پنل وب — مستقیم به ESP8266</p>
+        </header>
+
+        <div class="conn-bar">
+            <div class="conn-indicator" id="connIndicator"></div>
+            <div class="conn-text" id="connText">قطع</div>
+            <input type="text" id="ipInput" value="192.168.4.1" placeholder="IP ESP8266">
+            <button onclick="connect()">🔗 اتصال</button>
+            <button onclick="disconnect()">✕ قطع</button>
+        </div>
+
+        <div class="modes">
+            <button onclick="setAutoMode(true)" class="success">🔄 اتوماتیک</button>
+            <button onclick="setAutoMode(false)">⏸ دستی</button>
+            <button onclick="setGameMode(true)" class="danger">🎮 گیم مود</button>
+            <button onclick="setGameMode(false)">✕ خروج گیم</button>
+        </div>
+
+        <div class="cards">
+            <div class="card">
+                <h3>CPU Fan</h3>
+                <div class="fan-circle">
+                    <svg viewBox="0 0 200 200">
+                        <circle cx="100" cy="100" r="90" fill="none" stroke="#3a7bd5" stroke-width="3"/>
+                        <g class="fan-blades" id="cpuBlades">
+                            <path d="M100 100 C 100 100, 60 40, 100 20 C 140 40, 100 100, 100 100" fill="rgba(0,210,255,0.2)" stroke="#00d2ff" stroke-width="2"/>
+                            <path d="M100 100 C 100 100, 60 40, 100 20 C 140 40, 100 100, 100 100" fill="rgba(0,210,255,0.2)" stroke="#00d2ff" stroke-width="2" transform="rotate(120,100,100)"/>
+                            <path d="M100 100 C 100 100, 60 40, 100 20 C 140 40, 100 100, 100 100" fill="rgba(0,210,255,0.2)" stroke="#00d2ff" stroke-width="2" transform="rotate(240,100,100)"/>
+                        </g>
+                        <circle cx="100" cy="100" r="15" fill="#f3f3f3" stroke="#00d2ff" stroke-width="2"/>
+                    </svg>
+                </div>
+                <div class="stat-row">
+                    <div class="stat">
+                        <div class="stat-label">دما</div>
+                        <div class="stat-value" id="cpuTemp">--°C</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">سرعت</div>
+                        <div class="stat-value" id="cpuPct">--%</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">RPM</div>
+                        <div class="stat-value" id="cpuRpm">--</div>
+                    </div>
+                </div>
+                <div class="slider-row">
+                    <input type="range" id="cpuSlider" min="0" max="100" value="0"
+                           oninput="setFan('cpu', this.value)">
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>GPU Fan</h3>
+                <div class="fan-circle">
+                    <svg viewBox="0 0 200 200">
+                        <circle cx="100" cy="100" r="90" fill="none" stroke="#ff5252" stroke-width="3"/>
+                        <g class="fan-blades" id="gpuBlades">
+                            <path d="M100 100 C 100 100, 60 40, 100 20 C 140 40, 100 100, 100 100" fill="rgba(255,82,82,0.2)" stroke="#ff5252" stroke-width="2"/>
+                            <path d="M100 100 C 100 100, 60 40, 100 20 C 140 40, 100 100, 100 100" fill="rgba(255,82,82,0.2)" stroke="#ff5252" stroke-width="2" transform="rotate(120,100,100)"/>
+                            <path d="M100 100 C 100 100, 60 40, 100 20 C 140 40, 100 100, 100 100" fill="rgba(255,82,82,0.2)" stroke="#ff5252" stroke-width="2" transform="rotate(240,100,100)"/>
+                        </g>
+                        <circle cx="100" cy="100" r="15" fill="#f3f3f3" stroke="#ff5252" stroke-width="2"/>
+                    </svg>
+                </div>
+                <div class="stat-row">
+                    <div class="stat">
+                        <div class="stat-label">دما</div>
+                        <div class="stat-value gpu" id="gpuTemp">--°C</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">سرعت</div>
+                        <div class="stat-value gpu" id="gpuPct">--%</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">RPM</div>
+                        <div class="stat-value gpu" id="gpuRpm">--</div>
+                    </div>
+                </div>
+                <div class="slider-row">
+                    <input type="range" id="gpuSlider" min="0" max="100" value="0"
+                           oninput="setFan('gpu', this.value)">
+                </div>
+            </div>
+        </div>
+
+        <div class="conn-bar">
+            <span>📊 پروفایل:</span>
+            <select id="profileSelect" onchange="setProfile(this.value)" style="background:rgba(255,255,255,0.08);color:#00d2ff;border:1px solid rgba(255,255,255,0.1);padding:8px;border-radius:8px;font-family:inherit;">
+                <option value="0">Silent (آروم)</option>
+                <option value="1" selected>Balanced (متعادل)</option>
+                <option value="2">Performance (عملکرد)</option>
+                <option value="3">Game (گیمینگ)</option>
+            </select>
+        </div>
+
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let pollInterval = null;
+
+        function log(msg, type = 'info') {
+            const logEl = document.getElementById('log');
+            const line = document.createElement('div');
+            line.className = 'log-line ' + type;
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logEl.appendChild(line);
+            logEl.scrollTop = logEl.scrollHeight;
+            if (logEl.children.length > 50) logEl.removeChild(logEl.firstChild);
+        }
+
+        function updateConnUI(connected) {
+            const ind = document.getElementById('connIndicator');
+            const text = document.getElementById('connText');
+            if (connected) {
+                ind.classList.add('connected');
+                text.textContent = '✓ وصل شده';
+                text.style.color = '#4caf50';
+            } else {
+                ind.classList.remove('connected');
+                text.textContent = '✗ قطع';
+                text.style.color = '#ff5252';
+            }
+        }
+
+        function connect() {
+            const ip = document.getElementById('ipInput').value.trim();
+            if (!ip) { log('IP وارد کنید', 'error'); return; }
+            log('در حال اتصال به ws://' + ip + ':81/ ...');
+
+            try { if (ws) ws.close(); } catch(e) {}
+
+            ws = new WebSocket('ws://' + ip + ':81/');
+
+            ws.onopen = function() {
+                log('✓ وصل شد! WebSocket متصل', 'success');
+                updateConnUI(true);
+                ws.send(JSON.stringify({cmd: 'status'}));
+                startPolling(ip);
+            };
+
+            ws.onmessage = function(event) {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'status') updateStatus(msg);
+                } catch(e) { log('Parse error: ' + e, 'error'); }
+            };
+
+            ws.onerror = function(err) {
+                log('✗ WebSocket خطا', 'error');
+            };
+
+            ws.onclose = function() {
+                log('اتصال بسته شد');
+                updateConnUI(false);
+                stopPolling();
+            };
+        }
+
+        function disconnect() {
+            if (ws) { ws.close(); ws = null; }
+            stopPolling();
+            updateConnUI(false);
+        }
+
+        function startPolling(ip) {
+            stopPolling();
+            pollInterval = setInterval(function() {
+                fetch('http://' + ip + '/status')
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) { updateStatus(data); })
+                    .catch(function(e) { log('Poll error: ' + e, 'error'); });
+            }, 3000);
+        }
+
+        function stopPolling() {
+            if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+        }
+
+        function updateStatus(s) {
+            document.getElementById('cpuTemp').textContent = (s.cpu_temp || 0) + '°C';
+            document.getElementById('cpuPct').textContent = (s.cpu_pct || 0) + '%';
+            document.getElementById('cpuRpm').textContent = s.cpu_rpm || 0;
+            setSpinSpeed('cpuBlades', s.cpu_pct || 0);
+
+            document.getElementById('gpuTemp').textContent = (s.gpu_temp || 0) + '°C';
+            document.getElementById('gpuPct').textContent = (s.gpu_pct || 0) + '%';
+            document.getElementById('gpuRpm').textContent = s.gpu_rpm || 0;
+            setSpinSpeed('gpuBlades', s.gpu_pct || 0);
+
+            document.getElementById('profileSelect').value = s.profile || 1;
+        }
+
+        function setSpinSpeed(id, percent) {
+            const el = document.getElementById(id);
+            if (percent === 0) {
+                el.style.animation = 'none';
+            } else {
+                const duration = (100 - percent + 5) / 35;
+                el.style.animation = 'spin ' + duration + 's linear infinite';
+            }
+        }
+
+        function setFan(fan, percent) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('ابتدا وصل شوید', 'error');
+                return;
+            }
+            const mode = percent === 0 ? 'auto' : 'manual';
+            ws.send(JSON.stringify({cmd: 'set', fan: fan, percent: parseInt(percent), mode: mode}));
+            log(fan.toUpperCase() + ': ' + percent + '% (' + mode + ')');
+        }
+
+        function setGameMode(on) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) { log('وصل نیست', 'error'); return; }
+            ws.send(JSON.stringify({cmd: 'game', on: on}));
+            log('Game Mode: ' + (on ? 'ON' : 'OFF'), on ? 'success' : 'info');
+        }
+
+        function setAutoMode(on) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) { log('وصل نیست', 'error'); return; }
+            ws.send(JSON.stringify({cmd: 'auto', on: on}));
+            log('Auto Mode: ' + (on ? 'ON' : 'OFF'), on ? 'success' : 'info');
+        }
+
+        function setProfile(id) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) { log('وصل نیست', 'error'); return; }
+            ws.send(JSON.stringify({cmd: 'profile', id: parseInt(id)}));
+            log('Profile: ' + id);
+        }
+
+        window.addEventListener('load', function() {
+            log('صفحه بارگذاری شد. برای اتصال، روی «🔗 اتصال» کلیک کنید.');
+            log('ابتدا به وای‌فای FanController (رمز: 12345678) وصل شوید.');
+        });
+    </script>
+</body>
+</html>
