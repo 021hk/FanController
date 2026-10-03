@@ -1037,12 +1037,30 @@ class FanControllerGUI(QMainWindow):
         status_row.addWidget(self.cmb_profile)
         root.addLayout(status_row)
 
-        # ---------- Game Mode button ----------
+        # ---------- Game Mode + Auto Mode buttons ----------
+        mode_row = QHBoxLayout()
+
+        # Auto Mode toggle button
+        self.btn_auto = QPushButton("🔄 حالت اتوماتیک: روشن")
+        self.btn_auto.setCheckable(True)
+        self.btn_auto.setChecked(True)
+        self.btn_auto.setObjectName("ModeButton")
+        self.btn_auto.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_auto.setToolTip("حالت اتوماتیک: فن‌ها طبق منحنی دما تنظیم می‌شن\n"
+                                  "اگه خاموش کنید، فن‌ها در سرعت فعلی ثابت می‌مونن")
+        self.btn_auto.clicked.connect(self._toggle_auto_mode)
+        mode_row.addWidget(self.btn_auto)
+
+        mode_row.addStretch()
+
+        # Game Mode button
         self.btn_game = QPushButton("🎮  فعال‌سازی حالت گیم (همه فن‌ها ۱۰۰٪)")
         self.btn_game.setObjectName("GameButton")
         self.btn_game.setCheckable(True)
         self.btn_game.clicked.connect(self._toggle_game_mode)
-        root.addWidget(self.btn_game)
+        mode_row.addWidget(self.btn_game)
+
+        root.addLayout(mode_row)
 
         # ---------- Fan cards grid (2 fans: CPU + GPU) ----------
         cards_frame = QFrame()
@@ -1166,6 +1184,17 @@ class FanControllerGUI(QMainWindow):
     def _toggle_game_mode(self):
         is_on = self.btn_game.isChecked()
         self._on_game_mode(is_on)
+
+    # ---------- Auto mode ----------
+    def _toggle_auto_mode(self):
+        is_on = self.btn_auto.isChecked()
+        self.btn_auto.setText("🔄 حالت اتوماتیک: روشن" if is_on
+                              else "🔄 حالت اتوماتیک: خاموش")
+        log.info(f"Auto mode -> {is_on}")
+        try:
+            self.client._send({"cmd": "auto", "on": bool(is_on)})
+        except Exception as e:
+            log.warning(f"Auto mode send failed: {e}")
 
     # ---------- Manual fan control ----------
     def _on_manual(self, fan: str, value: int):

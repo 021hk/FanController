@@ -1,46 +1,39 @@
 /* ============================================================
- *  ESP8266 Dual PWM Fan Controller - v2.0 (matched with PC GUI v1.3.8)
+ *  ESP8266 Dual PWM Fan Controller - v3.0 (Stable + Auto Mode)
  *  ----------------------------------------------------------
- *  Target  : ESP8266 (NodeMCU v1.0 / Wemos D1 Mini)
- *  Board   : "NodeMCU 1.0 (ESP-12E Module)"
- *  Library : ESP8266 Arduino Core >= 3.0
- *            + WebSocketsServer (Links2004/arduinoWebSockets)
- *            + ArduinoJson 6.x
- *
- *  WiFi Mode: AP (Hotspot)
+ *  Target  : NodeMCU 1.0 (ESP-12E Module) - V3
+ *  WiFi    : AP (Hotspot)
  *    SSID:     FanController
  *    Password: 12345678
  *    IP:       192.168.4.1
- *    WS Port:  81
- *    HTTP:     80
  *
- *  Protocol (JSON over WebSocket):
- *    PC -> ESP:
- *      {"cmd":"temps","cpu":52,"gpu":68}      // push current temps
- *      {"cmd":"set","fan":"cpu","percent":80,"mode":"manual"}
- *      {"cmd":"game","on":true}
- *      {"cmd":"profile","id":2}                // 0=Silent 1=Balanced 2=Performance 3=Game
- *      {"cmd":"curve","fan":"cpu","temps":[30,50,70,90],"percents":[20,40,75,100]}
- *      {"cmd":"status"}                        // request current state
- *    ESP -> PC:
- *      {"type":"status","cpu_pct":55,"gpu_pct":100,"cpu_temp":52,"gpu_temp":68,
- *       "cpu_mode":0,"gpu_mode":2,"profile":3,"game":true}
- *
- *  Modes: 0=Auto (use curve), 1=Manual, 2=Game (100%), 3=Failsafe (70%)
+ *  Features:
+ *    - 2x PWM fan outputs (CPU, GPU) at 25kHz
+ *    - WebSocket server on port 81 (real-time)
+ *    - HTTP REST on port 80 (fallback)
+ *    - USB Serial fallback (115200 baud)
+ *    - Physical button for Game Mode toggle
+ *    - 4 profiles (Silent/Balanced/Performance/Game)
+ *    - AUTO mode: fans follow temperature curve from PC
+ *    - MANUAL mode: fans stay at fixed percent
+ *    - GAME mode: all fans 100%
+ *    - FAILSAFE: 70% if PC lost contact >30s
+ *    - EEPROM persistence
  * ============================================================
  */
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 
 // ============================================================
-//  USER CONFIG - EDIT THESE BEFORE FIRST FLASH
+//  USER CONFIG
 // ============================================================
 const char* AP_SSID      = "FanController";
-const char* AP_PASSWORD   = "12345678";   // min 8 chars, or "" for open AP
+const char* AP_PASSWORD   = "12345678";   // min 8 chars
 
 IPAddress AP_IP      (192, 168, 4, 1);
 IPAddress AP_GATEWAY (192, 168, 4, 1);
@@ -50,27 +43,19 @@ IPAddress AP_SUBNET  (255, 255, 255, 0);
 #define AP_MAX_CLIENTS 4
 
 // ============================================================
-//  PIN MAPPING (NodeMCU D1 Mini)
-//  D1 = GPIO5  -> CPU fan PWM (4-pin header pin 4)
-//  D2 = GPIO4  -> GPU fan PWM (4-pin header pin 4)
-//  D5 = GPIO14 -> Game Mode push button (active low, to GND)
-//  D4 = GPIO2  -> Onboard LED (active low - shows Game Mode status)
-//  D6 = GPIO12 -> USB VBUS detect (optional, via voltage divider)
-//  Vin        -> 5V from USB or PSU
-//  GND        -> Common ground with PSU (CRITICAL!)
+//  PINS (NodeMCU V3)
 // ============================================================
-#define FAN_CPU_PIN     5   // D1
-#define FAN_GPU_PIN     4   // D2
-#define BUTTON_PIN      14  // D5
-#define STATUS_LED      2   // D4
-#define USB_DETECT_PIN  12  // D6
+#define FAN_CPU_PIN     5   // D1 = GPIO5
+#define FAN_GPU_PIN     4   // D2 = GPIO4
+#define BUTTON_PIN      14  // D5 = GPIO14
+#define STATUS_LED      2   // D4 = GPIO2 (onboard LED, active low)
 
 // ============================================================
 //  CONSTANTS
 // ============================================================
-#define PWM_FREQ_HZ      25000UL    // Intel PC fan spec: 25 kHz
-#define PWM_RANGE        1023       // 10-bit
-#define PWM_MIN_DUTY     102        // 10% minimum (keep fan spinning)
+#define PWM_FREQ_HZ      25000UL
+#define PWM_RANGE        1023
+#define PWM_MIN_DUTY     102
 #define PERCENT_TO_DUTY(p)  ((p * PWM_RANGE) / 100)
 
 #define WS_PORT          81
@@ -78,10 +63,8 @@ IPAddress AP_SUBNET  (255, 255, 255, 0);
 #define SERIAL_BAUD      115200
 #define DEBOUNCE_MS      50
 #define LONGPRESS_MS     1500
-
 #define EEPROM_SIZE      512
 #define EEPROM_MAGIC     0xA5
-
 #define NUM_FANS         2
 #define CURVE_POINTS    7
 
@@ -89,8 +72,7 @@ enum FanID    : uint8_t { FAN_CPU = 0, FAN_GPU = 1 };
 enum CtrlMode : uint8_t { MODE_AUTO = 0, MODE_MANUAL = 1, MODE_GAME = 2, MODE_FAILSAFE = 3 };
 
 struct FanState {
-  uint8_t  percent = 30;
-  uint8_t  manualPercent = 50;
+  uint8_t  percent = 50;
   CtrlMode mode = MODE_AUTO;
 };
 
@@ -105,7 +87,7 @@ FanCurve  curves[NUM_FANS];
 uint8_t   lastTemps[NUM_FANS] = {40, 40};
 uint8_t   activeProfile = 1;
 bool      gameMode = false;
-bool      usbFallback = false;
+bool      autoMode = true;  // AUTO mode enabled by default
 unsigned long lastPCContact = 0;
 unsigned long lastButtonPress = 0;
 bool      lastButtonState = HIGH;
@@ -114,52 +96,31 @@ ESP8266WebServer http(HTTP_PORT);
 WebSocketsServer  ws(WS_PORT);
 
 // ============================================================
-//  FORWARD DECLARATIONS
-// ============================================================
-void setFanPercent(uint8_t fan, uint8_t percent);
-uint8_t evalCurve(uint8_t fan, uint8_t temp);
-void handleWebSocket(uint8_t num, WStype_t type, uint8_t *payload, size_t length);
-void handleRoot();
-void handleStatus();
-void handleSetFan();
-void sendStateToClients();
-void processSerial();
-void checkButton();
-void checkWiFi();
-void loadEEPROM();
-void saveEEPROM();
-void applyProfile(uint8_t p);
-void setGameMode(bool on);
-
-// ============================================================
 //  SETUP
 // ============================================================
 void setup() {
   Serial.begin(SERIAL_BAUD);
   delay(200);
-  Serial.println(F("\n[BOOT] ESP8266 Fan Controller v2.0"));
+  Serial.println(F("\n[BOOT] ESP8266 Fan Controller v3.0"));
 
   pinMode(FAN_CPU_PIN, OUTPUT);
   pinMode(FAN_GPU_PIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(STATUS_LED, OUTPUT);
-  pinMode(USB_DETECT_PIN, INPUT_PULLUP);
 
   analogWriteFreq(PWM_FREQ_HZ);
   analogWriteRange(PWM_RANGE);
 
-  // Initial safe output (50% so fans are spinning)
+  // Initial 50% to ensure fans are spinning
   setFanPercent(FAN_CPU, 50);
   setFanPercent(FAN_GPU, 50);
-  digitalWrite(STATUS_LED, LOW);   // ON during boot
+  digitalWrite(STATUS_LED, HIGH);   // LED OFF (active low)
 
   EEPROM.begin(EEPROM_SIZE);
   loadEEPROM();
 
-  // ----- AP MODE (HOTSPOT) -----
-  Serial.printf("[AP] Starting hotspot '%s' on channel %d...\n",
-                 AP_SSID, AP_CHANNEL);
-
+  // Start WiFi AP
+  Serial.printf("[AP] Starting hotspot '%s'...\n", AP_SSID);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
 
@@ -171,16 +132,17 @@ void setup() {
   }
 
   if (apOK) {
-    usbFallback = false;
     Serial.print(F("[AP] Hotspot started! IP="));
     Serial.println(WiFi.softAPIP());
-    Serial.printf("[AP] SSID='%s'  Pass='%s'  Clients(max)=%d\n",
-                   AP_SSID,
-                   (strlen(AP_PASSWORD) >= 8 ? AP_PASSWORD : "(open)"),
-                   AP_MAX_CLIENTS);
+    Serial.printf("[AP] SSID='%s'  Pass='%s'\n", AP_SSID, AP_PASSWORD);
 
-    http.on("/",      handleRoot);
-    http.on("/status",handleStatus);
+    http.on("/",      []() {
+      http.send(200, "text/plain",
+        "ESP8266 Fan Controller v3.0\n"
+        "Endpoints: /status /set?fan=cpu&percent=80&mode=manual\n"
+        "WebSocket: port 81\n");
+    });
+    http.on("/status", handleStatus);
     http.on("/set",   handleSetFan);
     http.onNotFound([]() { http.send(404, "text/plain", "404"); });
     http.begin();
@@ -190,44 +152,28 @@ void setup() {
 
     if (MDNS.begin("fanctrl")) {
       MDNS.addService("http", "tcp", 80);
-      Serial.println(F("[mDNS] fanctrl.local"));
     }
 
-    // Blink LED 3 times to indicate AP is up
+    // Blink LED 3 times to confirm AP is up
     for (uint8_t i = 0; i < 3; i++) {
       digitalWrite(STATUS_LED, LOW);  delay(100);
       digitalWrite(STATUS_LED, HIGH); delay(100);
     }
+    Serial.println(F("[BOOT] ready - connect PC to WiFi 'FanController'"));
   } else {
-    usbFallback = true;
-    Serial.println(F("[AP] FAILED to start hotspot -> USB fallback"));
+    Serial.println(F("[AP] FAILED - check config"));
   }
-
-  digitalWrite(STATUS_LED, HIGH);
-  Serial.println(F("[BOOT] ready"));
-  Serial.println(F("=========================================="));
-  Serial.println(F("WiFi Hotspot:"));
-  Serial.printf("  SSID: %s\n", AP_SSID);
-  Serial.printf("  Pass: %s\n", AP_PASSWORD);
-  Serial.print  (F("  IP:   ")); Serial.println(WiFi.softAPIP());
-  Serial.println(F("  WS Port: 81  HTTP Port: 80"));
-  Serial.println(F("=========================================="));
-  Serial.println(F("Connect PC to WiFi 'FanController'"));
-  Serial.println(F("Then run FanController.exe on PC"));
-  Serial.println(F("=========================================="));
 }
 
 // ============================================================
 //  LOOP
 // ============================================================
 void loop() {
-  if (!usbFallback) {
-    http.handleClient();
-    ws.loop();
-  }
+  http.handleClient();
+  ws.loop();
   processSerial();
   checkButton();
-  checkWiFi();
+  checkWatchdog();
 }
 
 // ============================================================
@@ -265,7 +211,7 @@ void applyProfile(uint8_t p) {
       for (uint8_t i = 0; i < NUM_FANS; i++)
         curves[i] = { {30,40,50,60,70,80,90}, {15,25,35,50,65,80,95}, 7 };
       break;
-    case 1: // Balanced (default)
+    case 1: // Balanced
       for (uint8_t i = 0; i < NUM_FANS; i++)
         curves[i] = { {30,40,50,60,70,80,90}, {20,30,40,55,70,85,100}, 7 };
       break;
@@ -273,13 +219,13 @@ void applyProfile(uint8_t p) {
       for (uint8_t i = 0; i < NUM_FANS; i++)
         curves[i] = { {30,40,50,60,65,70,80}, {30,45,60,75,85,95,100}, 7 };
       break;
-    case 3: // Game (boosted, min 60%)
+    case 3: // Game (min 60%)
       for (uint8_t i = 0; i < NUM_FANS; i++)
         curves[i] = { {30,40,50,60,70,80,90}, {60,70,80,90,95,100,100}, 7 };
       break;
   }
   saveEEPROM();
-  Serial.printf("[PROFILE] applied #%d\n", p);
+  Serial.printf("[PROFILE] #%d applied\n", p);
 }
 
 void setGameMode(bool on) {
@@ -290,8 +236,8 @@ void setGameMode(bool on) {
     setFanPercent(FAN_GPU, 100);
     fans[FAN_CPU].mode = MODE_GAME;
     fans[FAN_GPU].mode = MODE_GAME;
-    digitalWrite(STATUS_LED, LOW);  // LED ON = game mode
-    Serial.println(F("[GAME] ON - all fans 100%"));
+    digitalWrite(STATUS_LED, LOW);  // LED ON
+    Serial.println(F("[GAME] ON - 100%"));
   } else {
     fans[FAN_CPU].mode = MODE_AUTO;
     fans[FAN_GPU].mode = MODE_AUTO;
@@ -303,7 +249,7 @@ void setGameMode(bool on) {
 }
 
 // ============================================================
-//  WEBSOCKET HANDLER
+//  WEBSOCKET
 // ============================================================
 void handleWebSocket(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
   if (type == WStype_CONNECTED) {
@@ -319,13 +265,14 @@ void handleWebSocket(uint8_t num, WStype_t type, uint8_t *payload, size_t length
       lastTemps[FAN_CPU] = doc["cpu"] | lastTemps[FAN_CPU];
       lastTemps[FAN_GPU] = doc["gpu"] | lastTemps[FAN_GPU];
       lastPCContact = millis();
-      Serial.printf("[TEMP] CPU=%u°C GPU=%u°C\n", lastTemps[FAN_CPU], lastTemps[FAN_GPU]);
-      if (!gameMode) {
+      Serial.printf("[TEMP] CPU=%u GPU=%u\n", lastTemps[FAN_CPU], lastTemps[FAN_GPU]);
+      // Auto-adjust fans if in AUTO mode and not in GAME mode
+      if (autoMode && !gameMode) {
         uint8_t cpuPct = evalCurve(FAN_CPU, lastTemps[FAN_CPU]);
         uint8_t gpuPct = evalCurve(FAN_GPU, lastTemps[FAN_GPU]);
         setFanPercent(FAN_CPU, cpuPct);
         setFanPercent(FAN_GPU, gpuPct);
-        Serial.printf("[FAN] CPU->%u%% GPU->%u%%\n", cpuPct, gpuPct);
+        Serial.printf("[AUTO] CPU->%u%% GPU->%u%%\n", cpuPct, gpuPct);
       }
       sendStateToClients();
     }
@@ -336,18 +283,18 @@ void handleWebSocket(uint8_t num, WStype_t type, uint8_t *payload, size_t length
       const char* mode = doc["mode"] | "manual";
       if (strcmp(mode, "auto") == 0) {
         fans[fan].mode = MODE_AUTO;
-        Serial.printf("[SET] %s -> AUTO\n", fanStr);
+        Serial.printf("[SET] %s AUTO\n", fanStr);
       } else if (strcmp(mode, "game") == 0) {
         fans[fan].mode = MODE_GAME;
         setFanPercent(fan, 100);
-        Serial.printf("[SET] %s -> GAME (100%%)\n", fanStr);
+        Serial.printf("[SET] %s GAME\n", fanStr);
         saveEEPROM();
+        sendStateToClients();
         return;
       } else {
         fans[fan].mode = MODE_MANUAL;
-        fans[fan].manualPercent = pct;
         setFanPercent(fan, pct);
-        Serial.printf("[SET] %s -> %u%% (MANUAL)\n", fanStr, pct);
+        Serial.printf("[SET] %s %u%% MANUAL\n", fanStr, pct);
       }
       saveEEPROM();
       sendStateToClients();
@@ -355,10 +302,21 @@ void handleWebSocket(uint8_t num, WStype_t type, uint8_t *payload, size_t length
     else if (strcmp(cmd, "game") == 0) {
       setGameMode(doc["on"] | true);
     }
+    else if (strcmp(cmd, "auto") == 0) {
+      // Toggle auto mode globally
+      autoMode = doc["on"] | true;
+      Serial.printf("[AUTO] mode %s\n", autoMode ? "ON" : "OFF");
+      if (!autoMode && !gameMode) {
+        // If auto disabled, hold current fan speeds
+        Serial.println(F("[AUTO] holding current speeds"));
+      }
+      saveEEPROM();
+      sendStateToClients();
+    }
     else if (strcmp(cmd, "profile") == 0) {
       uint8_t pid = doc["id"] | 1;
       applyProfile(pid);
-      if (!gameMode) {
+      if (autoMode && !gameMode) {
         setFanPercent(FAN_CPU, evalCurve(FAN_CPU, lastTemps[FAN_CPU]));
         setFanPercent(FAN_GPU, evalCurve(FAN_GPU, lastTemps[FAN_GPU]));
       }
@@ -375,8 +333,7 @@ void handleWebSocket(uint8_t num, WStype_t type, uint8_t *payload, size_t length
       }
       curves[fan].numPoints = n;
       saveEEPROM();
-      Serial.printf("[CURVE] %s updated (%u points)\n",
-                     fan == FAN_CPU ? "CPU" : "GPU", n);
+      Serial.printf("[CURVE] %s updated (%u pts)\n", fan==FAN_CPU?"CPU":"GPU", n);
       sendStateToClients();
     }
     else if (strcmp(cmd, "status") == 0) {
@@ -386,7 +343,6 @@ void handleWebSocket(uint8_t num, WStype_t type, uint8_t *payload, size_t length
 }
 
 void sendStateToClients() {
-  if (usbFallback) return;
   StaticJsonDocument<512> doc;
   doc["type"]     = "status";
   doc["cpu_pct"]  = fans[FAN_CPU].percent;
@@ -397,24 +353,15 @@ void sendStateToClients() {
   doc["gpu_mode"] = (uint8_t)fans[FAN_GPU].mode;
   doc["profile"]  = activeProfile;
   doc["game"]     = gameMode;
+  doc["auto"]     = autoMode;
   String out;
   serializeJson(doc, out);
   ws.broadcastTXT(out);
 }
 
 // ============================================================
-//  HTTP (fallback)
+//  HTTP REST
 // ============================================================
-void handleRoot() {
-  http.send(200, "text/plain",
-    "ESP8266 Dual Fan Controller v2.0\n"
-    "================================\n"
-    "WiFi Hotspot: FanController\n"
-    "IP: 192.168.4.1\n"
-    "WS: port 81\n"
-    "HTTP: /status /set?fan=cpu&percent=80&mode=manual\n");
-}
-
 void handleStatus() {
   String json;
   StaticJsonDocument<512> doc;
@@ -426,7 +373,7 @@ void handleStatus() {
   doc["gpu_mode"] = (uint8_t)fans[FAN_GPU].mode;
   doc["profile"]  = activeProfile;
   doc["game"]     = gameMode;
-  doc["wifi"]     = (WiFi.status() == WL_CONNECTED);
+  doc["auto"]     = autoMode;
   doc["ip"]       = WiFi.softAPIP().toString();
   doc["uptime"]   = millis() / 1000;
   serializeJson(doc, json);
@@ -445,10 +392,11 @@ void handleSetFan() {
     fans[fan].mode = MODE_GAME;
     setFanPercent(fan, 100);
     http.send(200, "application/json", "{\"ok\":true}");
+    saveEEPROM();
+    sendStateToClients();
     return;
   } else {
     fans[fan].mode = MODE_MANUAL;
-    fans[fan].manualPercent = pct;
     setFanPercent(fan, pct);
   }
   saveEEPROM();
@@ -457,7 +405,7 @@ void handleSetFan() {
 }
 
 // ============================================================
-//  USB SERIAL (fallback when WiFi down)
+//  USB SERIAL (fallback)
 // ============================================================
 void processSerial() {
   static String buffer;
@@ -465,7 +413,6 @@ void processSerial() {
     char c = Serial.read();
     if (c == '\n' || c == '\r') {
       if (buffer.length() > 0) {
-        // Process same as WebSocket
         StaticJsonDocument<512> doc;
         if (!deserializeJson(doc, buffer)) {
           const char* cmd = doc["cmd"] | "";
@@ -473,7 +420,7 @@ void processSerial() {
             lastTemps[FAN_CPU] = doc["cpu"] | lastTemps[FAN_CPU];
             lastTemps[FAN_GPU] = doc["gpu"] | lastTemps[FAN_GPU];
             lastPCContact = millis();
-            if (!gameMode) {
+            if (autoMode && !gameMode) {
               setFanPercent(FAN_CPU, evalCurve(FAN_CPU, lastTemps[FAN_CPU]));
               setFanPercent(FAN_GPU, evalCurve(FAN_GPU, lastTemps[FAN_GPU]));
             }
@@ -485,6 +432,7 @@ void processSerial() {
             s["cpu_temp"] = lastTemps[FAN_CPU];
             s["gpu_temp"] = lastTemps[FAN_GPU];
             s["game"] = gameMode;
+            s["auto"] = autoMode;
             serializeJson(s, Serial);
             Serial.println();
           }
@@ -499,7 +447,7 @@ void processSerial() {
 }
 
 // ============================================================
-//  PHYSICAL BUTTON (Game Mode toggle)
+//  BUTTON
 // ============================================================
 void checkButton() {
   bool now = digitalRead(BUTTON_PIN);
@@ -512,14 +460,14 @@ void checkButton() {
   } else if (lastButtonState == LOW && now == HIGH) {
     unsigned long held = millis() - lastButtonPress;
     if (held > 50 && held < LONGPRESS_MS) {
-      // Short press: toggle game mode
       setGameMode(!gameMode);
     } else if (held >= LONGPRESS_MS) {
-      // Long press: reset to Silent profile
       setGameMode(false);
       applyProfile(0);
-      setFanPercent(FAN_CPU, evalCurve(FAN_CPU, lastTemps[FAN_CPU]));
-      setFanPercent(FAN_GPU, evalCurve(FAN_GPU, lastTemps[FAN_GPU]));
+      if (autoMode) {
+        setFanPercent(FAN_CPU, evalCurve(FAN_CPU, lastTemps[FAN_CPU]));
+        setFanPercent(FAN_GPU, evalCurve(FAN_GPU, lastTemps[FAN_GPU]));
+      }
       sendStateToClients();
     }
   }
@@ -527,50 +475,45 @@ void checkButton() {
 }
 
 // ============================================================
-//  AP WATCHDOG
+//  WATCHDOG
 // ============================================================
-void checkWiFi() {
+void checkWatchdog() {
   static unsigned long lastCheck = 0;
   if (millis() - lastCheck < 5000) return;
   lastCheck = millis();
 
-  // Lost contact for > 30s -> failsafe 70%
-  if (!usbFallback && millis() - lastPCContact > 30000) {
-    if (digitalRead(USB_DETECT_PIN) == LOW) {
-      usbFallback = true;
-      Serial.println(F("[AP] PC lost, switching to USB"));
-      return;
-    }
+  // Lost contact for >30s -> failsafe 70%
+  if (millis() - lastPCContact > 30000) {
     if (fans[FAN_CPU].mode != MODE_FAILSAFE) {
       fans[FAN_CPU].mode = MODE_FAILSAFE;
       fans[FAN_GPU].mode = MODE_FAILSAFE;
       setFanPercent(FAN_CPU, 70);
       setFanPercent(FAN_GPU, 70);
-      Serial.println(F("[FAILSAFE] No PC contact for 30s -> 70%"));
+      Serial.println(F("[FAILSAFE] No PC contact >30s -> 70%"));
     }
-  } else if (!usbFallback && fans[FAN_CPU].mode == MODE_FAILSAFE
-             && millis() - lastPCContact < 5000) {
+  } else if (fans[FAN_CPU].mode == MODE_FAILSAFE && millis() - lastPCContact < 5000) {
     fans[FAN_CPU].mode = MODE_AUTO;
     fans[FAN_GPU].mode = MODE_AUTO;
     Serial.println(F("[FAILSAFE] recovered"));
   }
 
-  // Print client count periodically
-  static uint8_t lastClientCount = 0;
+  // Print client count
+  static uint8_t lastClientCount = 99;
   uint8_t clientCount = WiFi.softAPgetStationNum();
   if (clientCount != lastClientCount) {
-    Serial.printf("[AP] Connected clients: %u\n", clientCount);
+    Serial.printf("[AP] clients: %u\n", clientCount);
     lastClientCount = clientCount;
   }
 }
 
 // ============================================================
-//  EEPROM PERSISTENCE
+//  EEPROM
 // ============================================================
 struct EEPROMLayout {
   uint8_t  magic;
   uint8_t  activeProfile;
   uint8_t  gameMode;
+  uint8_t  autoMode;
   FanCurve curves[NUM_FANS];
 };
 
@@ -578,15 +521,17 @@ void loadEEPROM() {
   EEPROMLayout data;
   EEPROM.get(0, data);
   if (data.magic != EEPROM_MAGIC) {
-    Serial.println(F("[EEPROM] fresh init -> Balanced profile"));
+    Serial.println(F("[EEPROM] fresh init"));
     applyProfile(1);
     saveEEPROM();
     return;
   }
   activeProfile = data.activeProfile;
   gameMode      = data.gameMode;
+  autoMode      = data.autoMode ? true : false;
   memcpy(curves, data.curves, sizeof(curves));
-  Serial.printf("[EEPROM] loaded profile=%u game=%u\n", activeProfile, gameMode);
+  Serial.printf("[EEPROM] loaded profile=%u game=%u auto=%u\n",
+                 activeProfile, gameMode, autoMode);
   applyProfile(activeProfile);
 }
 
@@ -595,6 +540,7 @@ void saveEEPROM() {
   data.magic         = EEPROM_MAGIC;
   data.activeProfile = activeProfile;
   data.gameMode      = gameMode;
+  data.autoMode      = autoMode ? 1 : 0;
   memcpy(data.curves, curves, sizeof(curves));
   EEPROM.put(0, data);
   EEPROM.commit();
