@@ -186,16 +186,57 @@ class ESPClient:
             self.usb_port = self._auto_detect_port()
             if not self.usb_port:
                 log.warning("No USB serial port detected")
+                log.warning("If ESP8266 is connected via USB:")
+                log.warning("  1. Close Arduino IDE and Serial Monitor (they lock the port)")
+                log.warning("  2. Check Device Manager > Ports (COM & LPT)")
+                log.warning("  3. Look for 'USB-SERIAL CH340' or similar")
+                log.warning("  4. Note the COM port number (e.g. COM3)")
+                log.warning("  5. Set it in config or pass --port COM3")
                 return False
+
+        log.info(f"Trying USB serial port: {self.usb_port}")
+
         try:
             import serial
             with self._serial_lock:
                 if self._serial is None:
-                    self._serial = serial.Serial(self.usb_port, self.usb_baud, timeout=1)
-            log.info(f"USB serial opened: {self.usb_port}")
+                    # Try to open with exclusive access
+                    self._serial = serial.Serial(
+                        self.usb_port,
+                        self.usb_baud,
+                        timeout=1,
+                        write_timeout=2,
+                        exclusive=True  # Prevent other apps from using it
+                    )
+                    # Test connection by sending a status request
+                    self._serial.write(b'{"cmd":"status"}\n')
+                    time.sleep(0.5)
+            log.info(f"USB serial opened: {self.usb_port} @ {self.usb_baud} baud")
+            self._set_state(ConnState.USB)
+            # Start USB read loop
+            threading.Thread(target=self._usb_read_loop, daemon=True).start()
             return True
         except Exception as e:
+            err_str = str(e)
             log.error(f"USB open failed: {e}")
+            if "PermissionError" in err_str or "Access is denied" in err_str:
+                log.error(">>> PORT IS LOCKED BY ANOTHER APPLICATION <<<")
+                log.error("Common causes:")
+                log.error("  - Arduino IDE Serial Monitor is open")
+                log.error("  - Another serial terminal (PuTTY, TeraTerm) is using the port")
+                log.error("  - The port is being used for programming")
+                log.error("Solution: Close all serial applications, then restart FanController")
+            elif "FileNotFoundError" in err_str:
+                log.error(">>> PORT DOES NOT EXIST <<<")
+                log.error("The COM port may have changed. Try re-plugging the ESP8266.")
+            elif "cannot configure" in err_str.lower():
+                log.error(">>> CANNOT CONFIGURE PORT <<<")
+                log.error("This usually means:")
+                log.error("  - The port is in use by another application")
+                log.error("  - The CH340 driver needs reinstallation")
+                log.error("  - The USB cable is data-only (some cables are power-only)")
+            # Clear usb_port so we re-detect next time
+            self.usb_port = ""
             return False
 
     @staticmethod
