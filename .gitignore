@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+build_output/
+*.spec.bak
+config.json
+lhm.zip
+lhm_extracted/
+.vscode/
+.idea/
+*.log
