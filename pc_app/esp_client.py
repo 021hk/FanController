@@ -153,19 +153,32 @@ class ESPClient:
         return self._last_status
 
     def _start_ws_thread(self) -> None:
+        log.info("=" * 60)
+        log.info("WIFI CONNECTION ATTEMPT")
+        log.info("=" * 60)
+        log.info(f"WIFI: Target IP: {self.esp_ip}")
+        log.info(f"WIFI: WS port: {self.ws_port}")
+        log.info(f"WIFI: HTTP port: {self.http_port}")
         self._ws_thread = threading.Thread(target=self._ws_loop, daemon=True)
         self._ws_thread.start()
 
     def _ws_loop(self) -> None:
+        log.info("WIFI: Starting WebSocket loop...")
         try:
             import websocket
         except ImportError:
-            log.error("websocket-client not installed; using HTTP fallback")
+            log.error("WIFI: ✗ websocket-client not installed")
+            log.error("WIFI: Install with: pip install websocket-client")
+            log.info("=" * 60)
             self._http_fallback_loop()
             return
+
         url = f"ws://{self.esp_ip}:{self.ws_port}/"
+        log.info(f"WIFI: Connecting to {url}...")
+
         while not self._stop_event.is_set():
             try:
+                log.info(f"WIFI: Creating WebSocket connection to {url}")
                 self._ws = websocket.WebSocketApp(
                     url,
                     on_open=self._ws_on_open,
@@ -173,32 +186,43 @@ class ESPClient:
                     on_error=self._ws_on_error,
                     on_close=self._ws_on_close,
                 )
+                log.info("WIFI: WebSocket object created, running forever...")
                 self._ws.run_forever(ping_interval=10, ping_timeout=5)
             except Exception as e:
-                log.warning(f"WS exception: {e}")
-            self._set_state(ConnState.DISCONNECTED)
+                log.warning(f"WIFI: ✗ WebSocket exception: {e}")
+
             if self._stop_event.is_set():
-                return
+                log.info("WIFI: Stop event set, exiting loop")
+                break
+
+            log.info(f"WIFI: Connection lost. Trying HTTP fallback...")
             if not self._try_http_then_usb():
+                # Sleep before WS reconnect
+                log.info(f"WIFI: Will retry in {self.RECONNECT_DELAY}s...")
                 self._stop_event.wait(self.RECONNECT_DELAY)
 
+        log.info("WIFI: WebSocket loop exited")
+        log.info("=" * 60)
+
     def _ws_on_open(self, ws):
-        log.info(f"WS connected to {self.esp_ip}")
+        log.info(f"WIFI: ✓ WebSocket CONNECTED to {self.esp_ip}")
+        log.info("=" * 60)
         self._set_state(ConnState.WS)
 
     def _ws_on_message(self, ws, data: str):
         try:
             msg = json.loads(data)
         except Exception:
+            log.debug(f"WIFI: Non-JSON message: {data[:100]}")
             return
         if msg.get("type") == "status":
             self._update_status(msg)
 
     def _ws_on_error(self, ws, error):
-        log.warning(f"WS error: {error}")
+        log.warning(f"WIFI: ✗ WebSocket error: {error}")
 
     def _ws_on_close(self, ws, code, reason):
-        log.info(f"WS closed: code={code} reason={reason}")
+        log.info(f"WIFI: WebSocket closed (code={code} reason={reason})")
 
     def _try_http_then_usb(self) -> bool:
         if self._http_poll_once():
@@ -239,59 +263,100 @@ class ESPClient:
         return False
 
     def _connect_usb(self) -> bool:
+        log.info("=" * 60)
+        log.info("USB CONNECTION ATTEMPT")
+        log.info("=" * 60)
+
         if not self.usb_port:
+            log.info("USB: No port specified, auto-detecting...")
             self.usb_port = self._auto_detect_port()
             if not self.usb_port:
-                log.warning("No USB serial port detected")
-                log.warning("If ESP8266 is connected via USB:")
-                log.warning("  1. Close Arduino IDE and Serial Monitor (they lock the port)")
-                log.warning("  2. Check Device Manager > Ports (COM & LPT)")
-                log.warning("  3. Look for 'USB-SERIAL CH340' or similar")
-                log.warning("  4. Note the COM port number (e.g. COM3)")
-                log.warning("  5. Set it in config or pass --port COM3")
+                log.warning("USB: No serial port detected")
+                log.warning("USB: >>> If ESP8266 is connected via USB:")
+                log.warning("USB:     1. Close Arduino IDE and Serial Monitor (they lock the port)")
+                log.warning("USB:     2. Check Device Manager > Ports (COM & LPT)")
+                log.warning("USB:     3. Look for 'USB-SERIAL CH340' or similar")
+                log.warning("USB:     4. Note the COM port number (e.g. COM3)")
+                log.warning("USB:     5. Set it in config or pass --port COM3")
+                log.info("=" * 60)
                 return False
 
-        log.info(f"Trying USB serial port: {self.usb_port}")
+        log.info(f"USB: Trying port: {self.usb_port} @ {self.usb_baud} baud")
+
+        try:
+            import serial
+            from serial.tools import list_ports
+            # List all available ports for debugging
+            all_ports = list(list_ports.comports())
+            log.info(f"USB: Available COM ports: {len(all_ports)}")
+            for p in all_ports:
+                vid_str = hex(p.vid) if p.vid else "N/A"
+                pid_str = hex(p.pid) if p.pid else "N/A"
+                log.info(f"USB:   - {p.device}: {p.description} (VID={vid_str} PID={pid_str})")
+        except ImportError:
+            log.error("USB: pyserial not installed")
+            return None
+        except Exception as e:
+            log.debug(f"USB: Could not list ports: {e}")
 
         try:
             import serial
             with self._serial_lock:
                 if self._serial is None:
-                    # Try to open with exclusive access
+                    log.info(f"USB: Opening port {self.usb_port}...")
                     self._serial = serial.Serial(
                         self.usb_port,
                         self.usb_baud,
                         timeout=1,
                         write_timeout=2,
-                        exclusive=True  # Prevent other apps from using it
+                        exclusive=True
                     )
+                    log.info(f"USB: Port {self.usb_port} opened successfully")
                     # Test connection by sending a status request
+                    log.info("USB: Sending test status request...")
                     self._serial.write(b'{"cmd":"status"}\n')
+                    import time
                     time.sleep(0.5)
-            log.info(f"USB serial opened: {self.usb_port} @ {self.usb_baud} baud")
+
+                    # Check if there's any response
+                    if self._serial.in_waiting > 0:
+                        response = self._serial.read(self._serial.in_waiting).decode(errors='replace').strip()
+                        log.info(f"USB: Got response from ESP: {response[:200]}")
+                    else:
+                        log.warning("USB: No immediate response (normal - ESP might be busy)")
+
+            log.info(f"USB: ✓ CONNECTED - {self.usb_port} @ {self.usb_baud} baud")
+            log.info("=" * 60)
             self._set_state(ConnState.USB)
             # Start USB read loop
             threading.Thread(target=self._usb_read_loop, daemon=True).start()
             return True
         except Exception as e:
             err_str = str(e)
-            log.error(f"USB open failed: {e}")
+            log.error(f"USB: ✗ FAILED to open {self.usb_port}")
+            log.error(f"USB: Error: {e}")
             if "PermissionError" in err_str or "Access is denied" in err_str:
-                log.error(">>> PORT IS LOCKED BY ANOTHER APPLICATION <<<")
-                log.error("Common causes:")
-                log.error("  - Arduino IDE Serial Monitor is open")
-                log.error("  - Another serial terminal (PuTTY, TeraTerm) is using the port")
-                log.error("  - The port is being used for programming")
-                log.error("Solution: Close all serial applications, then restart FanController")
+                log.error("USB: >>> PORT IS LOCKED BY ANOTHER APPLICATION <<<")
+                log.error("USB: Common causes:")
+                log.error("USB:   - Arduino IDE Serial Monitor is open")
+                log.error("USB:   - Another serial terminal (PuTTY, TeraTerm) is using the port")
+                log.error("USB:   - The port is being used for programming")
+                log.error("USB: Solution: Close all serial applications, then restart FanController")
             elif "FileNotFoundError" in err_str:
-                log.error(">>> PORT DOES NOT EXIST <<<")
-                log.error("The COM port may have changed. Try re-plugging the ESP8266.")
+                log.error("USB: >>> PORT DOES NOT EXIST <<<")
+                log.error("USB: The COM port may have changed. Try re-plugging the ESP8266.")
             elif "cannot configure" in err_str.lower():
-                log.error(">>> CANNOT CONFIGURE PORT <<<")
-                log.error("This usually means:")
-                log.error("  - The port is in use by another application")
-                log.error("  - The CH340 driver needs reinstallation")
-                log.error("  - The USB cable is data-only (some cables are power-only)")
+                log.error("USB: >>> CANNOT CONFIGURE PORT <<<")
+                log.error("USB: This usually means:")
+                log.error("USB:   - The port is in use by another application")
+                log.error("USB:   - The CH340 driver needs reinstallation")
+                log.error("USB:   - The USB cable is data-only (some cables are power-only)")
+                log.error("USB: Solutions:")
+                log.error("USB:   1. Close Arduino IDE completely")
+                log.error("USB:   2. Reinstall CH340 driver: https://sparks.gogo.co.nz/ch340.html")
+                log.error("USB:   3. Try a different USB cable (data cable, not charge-only)")
+                log.error("USB:   4. Try a different USB port")
+            log.error("=" * 60)
             # Clear usb_port so we re-detect next time
             self.usb_port = ""
             return False
