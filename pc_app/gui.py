@@ -1485,7 +1485,7 @@ class FanControllerGUI(QMainWindow):
             ConnState.DISCONNECTED: ("● قطع", DANGER_COLOR, False),
             ConnState.WS:           (f"● WebSocket @ {self.config.esp_ip}", SUCCESS_COLOR, True),
             ConnState.HTTP:         (f"● HTTP @ {self.config.esp_ip}", WARN_COLOR, True),
-            ConnState.USB:          (f"● USB @ {self.config.usb_port}", PRIMARY_COLOR, True),
+            ConnState.USB:          (f"● USB @ {self.client.usb_port or self.config.usb_port}", PRIMARY_COLOR, True),
         }
         text, color, connected = colors[state]
         self.lbl_conn.setText(text)

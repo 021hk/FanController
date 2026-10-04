@@ -45,12 +45,30 @@ IPAddress AP_SUBNET  (255, 255, 255, 0);
 // ============================================================
 //  PINS (NodeMCU V3)
 // ============================================================
-#define FAN_CPU_PIN     5   // D1 = GPIO5  (PWM output)
-#define FAN_GPU_PIN     4   // D2 = GPIO4  (PWM output)
-#define FAN_CPU_TACH    12  // D6 = GPIO12 (RPM input from CPU fan tach)
-#define FAN_GPU_TACH    13  // D7 = GPIO13 (RPM input from GPU fan tach)
+#define FAN_CPU_PIN     5   // D1 = GPIO5  (PWM output to fan blue wire)
+#define FAN_GPU_PIN     4   // D2 = GPIO4  (PWM output to fan blue wire)
+#define FAN_CPU_TACH    12  // D6 = GPIO12 (RPM input from fan yellow wire)
+#define FAN_GPU_TACH    13  // D7 = GPIO13 (RPM input from fan yellow wire)
 #define BUTTON_PIN      14  // D5 = GPIO14 (Game Mode button)
 #define STATUS_LED      2   // D4 = GPIO2  (onboard LED, active low)
+
+// ⚠️ WARNING FOR MINING/SERVER FANS (12V, >1A):
+// The Tach (yellow) wire on high-power fans may output 12V pulses,
+// which will DESTROY the ESP8266 GPIO pin (max 3.3V).
+//
+// If using mining/server fans, you MUST use a voltage divider or optocoupler:
+//
+//   Fan Tach (12V) ──[10kΩ]──┬──[20kΩ]── GND
+//                            └── ESP8266 D6/D7
+//
+//   OR use an optocoupler (PC817):
+//     Fan Tach ──[1kΩ]── LED+ (PC817 pin 1)
+//     GND ───────── LED- (PC826 pin 2)
+//     3.3V ─────── Collector (PC817 pin 4)
+//     ESP GPIO ──── Emitter (PC817 pin 3)
+//
+// If unsure, DO NOT connect the Tach wire. The fan will still work,
+// but RPM will show 0.
 
 // ============================================================
 //  CONSTANTS
@@ -139,6 +157,9 @@ void updateRPM() {
   fanRPM[FAN_GPU] = (uint16_t)((gpuCount * 60000UL) / (2UL * elapsed));
 
   Serial.printf("[RPM] CPU=%u  GPU=%u\n", fanRPM[FAN_CPU], fanRPM[FAN_GPU]);
+
+  // Push updated RPM to clients immediately (fixes GUI not updating RPM)
+  sendStateToClients();
 }
 
 // ============================================================
