@@ -480,6 +480,7 @@ void processSerial() {
         StaticJsonDocument<512> doc;
         if (!deserializeJson(doc, buffer)) {
           const char* cmd = doc["cmd"] | "";
+          bool sendStatus = false;  // Whether to send status back after this command
 
           if (strcmp(cmd, "temps") == 0) {
             lastTemps[FAN_CPU] = doc["cpu"] | lastTemps[FAN_CPU];
@@ -489,22 +490,7 @@ void processSerial() {
               setFanPercent(FAN_CPU, evalCurve(FAN_CPU, lastTemps[FAN_CPU]));
               setFanPercent(FAN_GPU, evalCurve(FAN_GPU, lastTemps[FAN_GPU]));
             }
-            // Send status back via Serial
-            StaticJsonDocument<512> s;
-            s["type"]      = "status";
-            s["cpu_pct"]   = fans[FAN_CPU].percent;
-            s["gpu_pct"]   = fans[FAN_GPU].percent;
-            s["cpu_temp"]  = lastTemps[FAN_CPU];
-            s["gpu_temp"]  = lastTemps[FAN_GPU];
-            s["cpu_rpm"]   = fanRPM[FAN_CPU];
-            s["gpu_rpm"]   = fanRPM[FAN_GPU];
-            s["cpu_mode"]  = (uint8_t)fans[FAN_CPU].mode;
-            s["gpu_mode"]  = (uint8_t)fans[FAN_GPU].mode;
-            s["profile"]   = activeProfile;
-            s["game"]      = gameMode;
-            s["auto"]      = autoMode;
-            serializeJson(s, Serial);
-            Serial.println();
+            sendStatus = true;
 
           } else if (strcmp(cmd, "set") == 0) {
             const char* fanStr = doc["fan"] | "cpu";
@@ -521,13 +507,16 @@ void processSerial() {
               setFanPercent(fan, pct);
             }
             saveEEPROM();
+            sendStatus = true;
 
           } else if (strcmp(cmd, "game") == 0) {
             setGameMode(doc["on"] | true);
+            sendStatus = true;
 
           } else if (strcmp(cmd, "auto") == 0) {
             autoMode = doc["on"] | true;
             saveEEPROM();
+            sendStatus = true;
 
           } else if (strcmp(cmd, "profile") == 0) {
             applyProfile(doc["id"] | 1);
@@ -535,6 +524,7 @@ void processSerial() {
               setFanPercent(FAN_CPU, evalCurve(FAN_CPU, lastTemps[FAN_CPU]));
               setFanPercent(FAN_GPU, evalCurve(FAN_GPU, lastTemps[FAN_GPU]));
             }
+            sendStatus = true;
 
           } else if (strcmp(cmd, "curve") == 0) {
             uint8_t fan = (strcmp(doc["fan"] | "cpu", "gpu") == 0) ? FAN_GPU : FAN_CPU;
@@ -547,8 +537,14 @@ void processSerial() {
             }
             curves[fan].numPoints = n;
             saveEEPROM();
+            sendStatus = true;
 
           } else if (strcmp(cmd, "status") == 0) {
+            sendStatus = true;
+          }
+
+          // Send status back via Serial after EVERY command
+          if (sendStatus) {
             StaticJsonDocument<512> s;
             s["type"]      = "status";
             s["cpu_pct"]   = fans[FAN_CPU].percent;
