@@ -376,17 +376,60 @@ class ESPClient:
 
     def _usb_read_loop(self) -> None:
         self._set_state(ConnState.USB)
+        consecutive_errors = 0
         while not self._stop_event.is_set():
             try:
+                # Check if serial is still valid
+                if self._serial is None or not self._serial.is_open:
+                    log.warning("USB: Serial port closed unexpectedly")
+                    self._set_state(ConnState.DISCONNECTED)
+                    return
+
                 line = self._serial.readline().decode(errors="replace").strip()
-                if line and line.startswith("{"):
+
+                # Skip empty lines and non-JSON (debug logs from ESP)
+                if not line:
+                    continue
+                if not line.startswith("{"):
+                    log.debug(f"USB: Non-JSON line: {line[:80]}")
+                    continue
+
+                try:
                     msg = json.loads(line)
-                    if msg.get("type") == "status":
-                        self._update_status(msg)
+                except json.JSONDecodeError as je:
+                    log.debug(f"USB: JSON parse error: {je} - line: {line[:80]}")
+                    continue
+
+                if msg.get("type") == "status":
+                    self._update_status(msg)
+
+                # Reset error counter on successful read
+                consecutive_errors = 0
+
             except Exception as e:
-                log.warning(f"USB read error: {e}")
-                self._set_state(ConnState.DISCONNECTED)
-                return
+                consecutive_errors += 1
+                log.warning(f"USB read error ({consecutive_errors}): {e}")
+
+                # Only disconnect if port is really gone or too many errors
+                if self._serial is None or not self._serial.is_open:
+                    log.warning("USB: Port closed, disconnecting")
+                    self._set_state(ConnState.DISCONNECTED)
+                    return
+
+                if consecutive_errors >= 5:
+                    log.warning("USB: Too many consecutive errors, reconnecting")
+                    try:
+                        if self._serial:
+                            self._serial.close()
+                    except:
+                        pass
+                    self._serial = None
+                    self.usb_port = ""
+                    self._set_state(ConnState.DISCONNECTED)
+                    return
+
+                # Brief sleep before retry
+                self._stop_event.wait(0.1)
 
     def _update_status(self, msg: Dict[str, Any]) -> None:
         s = ESPStatus(
@@ -449,12 +492,59 @@ class ESPClient:
 
     def _send(self, cmd: Dict[str, Any]) -> bool:
         msg = json.dumps(cmd)
+
+        # USB first (highest priority)
+        if self._state == ConnState.USB:
+            try:
+                with self._serial_lock:
+                    if self._serial is None or not self._serial.is_open:
+                        raise RuntimeError("USB serial is not open")
+
+                    self._serial.write((msg + "\n").encode())
+                    self._serial.flush()
+
+                return True
+
+            except Exception as e:
+                log.warning(f"USB send failed: {e}")
+
+                # IMPORTANT: invalidate broken serial connection
+                try:
+                    if self._serial:
+                        self._serial.close()
+                except Exception:
+                    pass
+
+                self._serial = None
+                self.usb_port = ""
+                self._set_state(ConnState.DISCONNECTED)
+
+                # Immediately try reconnect
+                log.info("USB: Attempting reconnect after send failure...")
+                if self._connect_usb():
+                    try:
+                        with self._serial_lock:
+                            if self._serial and self._serial.is_open:
+                                self._serial.write((msg + "\n").encode())
+                                self._serial.flush()
+                        log.info(f"USB: Retry send succeeded: {cmd['cmd']}")
+                        return True
+                    except Exception as retry_error:
+                        log.warning(f"USB retry send failed: {retry_error}")
+
+                # Fall through to try WiFi
+                log.info("USB: Failed, trying WiFi fallback...")
+
+        # WiFi (WebSocket)
         if self._state == ConnState.WS and self._ws:
             try:
                 self._ws.send(msg)
                 return True
             except Exception as e:
                 log.warning(f"WS send failed: {e}")
+                self._set_state(ConnState.DISCONNECTED)
+
+        # HTTP fallback
         if self._state == ConnState.HTTP and self._http_session:
             try:
                 if cmd["cmd"] == "set":
@@ -466,14 +556,17 @@ class ESPClient:
                     return r.status_code == 200
             except Exception as e:
                 log.warning(f"HTTP send failed: {e}")
-        if self._state == ConnState.USB or (self._serial is None and self._connect_usb()):
-            try:
-                with self._serial_lock:
-                    self._serial.write((msg + "\n").encode())
-                if self._state != ConnState.USB:
-                    self._set_state(ConnState.USB)
-                return True
-            except Exception as e:
-                log.warning(f"USB send failed: {e}")
+
+        # Last resort: try USB if not already tried
+        if self._state not in (ConnState.USB,) and self._serial is None:
+            if self._connect_usb():
+                try:
+                    with self._serial_lock:
+                        self._serial.write((msg + "\n").encode())
+                        self._serial.flush()
+                    return True
+                except Exception as e:
+                    log.warning(f"USB last-resort send failed: {e}")
+
         log.warning(f"Send dropped: {cmd['cmd']}")
         return False

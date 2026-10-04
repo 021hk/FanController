@@ -480,6 +480,7 @@ void processSerial() {
         StaticJsonDocument<512> doc;
         if (!deserializeJson(doc, buffer)) {
           const char* cmd = doc["cmd"] | "";
+
           if (strcmp(cmd, "temps") == 0) {
             lastTemps[FAN_CPU] = doc["cpu"] | lastTemps[FAN_CPU];
             lastTemps[FAN_GPU] = doc["gpu"] | lastTemps[FAN_GPU];
@@ -488,15 +489,79 @@ void processSerial() {
               setFanPercent(FAN_CPU, evalCurve(FAN_CPU, lastTemps[FAN_CPU]));
               setFanPercent(FAN_GPU, evalCurve(FAN_GPU, lastTemps[FAN_GPU]));
             }
+            // Send status back via Serial
+            StaticJsonDocument<512> s;
+            s["type"]      = "status";
+            s["cpu_pct"]   = fans[FAN_CPU].percent;
+            s["gpu_pct"]   = fans[FAN_GPU].percent;
+            s["cpu_temp"]  = lastTemps[FAN_CPU];
+            s["gpu_temp"]  = lastTemps[FAN_GPU];
+            s["cpu_rpm"]   = fanRPM[FAN_CPU];
+            s["gpu_rpm"]   = fanRPM[FAN_GPU];
+            s["cpu_mode"]  = (uint8_t)fans[FAN_CPU].mode;
+            s["gpu_mode"]  = (uint8_t)fans[FAN_GPU].mode;
+            s["profile"]   = activeProfile;
+            s["game"]      = gameMode;
+            s["auto"]      = autoMode;
+            serializeJson(s, Serial);
+            Serial.println();
+
+          } else if (strcmp(cmd, "set") == 0) {
+            const char* fanStr = doc["fan"] | "cpu";
+            uint8_t fan = (strcmp(fanStr, "gpu") == 0) ? FAN_GPU : FAN_CPU;
+            uint8_t pct = doc["percent"] | 50;
+            const char* mode = doc["mode"] | "manual";
+            if (strcmp(mode, "auto") == 0) {
+              fans[fan].mode = MODE_AUTO;
+            } else if (strcmp(mode, "game") == 0) {
+              fans[fan].mode = MODE_GAME;
+              setFanPercent(fan, 100);
+            } else {
+              fans[fan].mode = MODE_MANUAL;
+              setFanPercent(fan, pct);
+            }
+            saveEEPROM();
+
+          } else if (strcmp(cmd, "game") == 0) {
+            setGameMode(doc["on"] | true);
+
+          } else if (strcmp(cmd, "auto") == 0) {
+            autoMode = doc["on"] | true;
+            saveEEPROM();
+
+          } else if (strcmp(cmd, "profile") == 0) {
+            applyProfile(doc["id"] | 1);
+            if (autoMode && !gameMode) {
+              setFanPercent(FAN_CPU, evalCurve(FAN_CPU, lastTemps[FAN_CPU]));
+              setFanPercent(FAN_GPU, evalCurve(FAN_GPU, lastTemps[FAN_GPU]));
+            }
+
+          } else if (strcmp(cmd, "curve") == 0) {
+            uint8_t fan = (strcmp(doc["fan"] | "cpu", "gpu") == 0) ? FAN_GPU : FAN_CPU;
+            JsonArray t = doc["temps"].as<JsonArray>();
+            JsonArray p = doc["percents"].as<JsonArray>();
+            uint8_t n = min((uint8_t)t.size(), (uint8_t)CURVE_POINTS);
+            for (uint8_t i = 0; i < n; i++) {
+              curves[fan].temps[i]    = t[i];
+              curves[fan].percents[i] = p[i];
+            }
+            curves[fan].numPoints = n;
+            saveEEPROM();
+
           } else if (strcmp(cmd, "status") == 0) {
             StaticJsonDocument<512> s;
-            s["type"] = "status";
-            s["cpu_pct"] = fans[FAN_CPU].percent;
-            s["gpu_pct"] = fans[FAN_GPU].percent;
-            s["cpu_temp"] = lastTemps[FAN_CPU];
-            s["gpu_temp"] = lastTemps[FAN_GPU];
-            s["game"] = gameMode;
-            s["auto"] = autoMode;
+            s["type"]      = "status";
+            s["cpu_pct"]   = fans[FAN_CPU].percent;
+            s["gpu_pct"]   = fans[FAN_GPU].percent;
+            s["cpu_temp"]  = lastTemps[FAN_CPU];
+            s["gpu_temp"]  = lastTemps[FAN_GPU];
+            s["cpu_rpm"]   = fanRPM[FAN_CPU];
+            s["gpu_rpm"]   = fanRPM[FAN_GPU];
+            s["cpu_mode"]  = (uint8_t)fans[FAN_CPU].mode;
+            s["gpu_mode"]  = (uint8_t)fans[FAN_GPU].mode;
+            s["profile"]   = activeProfile;
+            s["game"]      = gameMode;
+            s["auto"]      = autoMode;
             serializeJson(s, Serial);
             Serial.println();
           }
