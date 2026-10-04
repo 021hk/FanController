@@ -434,12 +434,14 @@ void sendStateToClients() {
   doc["auto"]      = autoMode;
   String out;
   serializeJson(doc, out);
+
+  // Send via WebSocket (if WiFi clients connected)
   ws.broadcastTXT(out);
-  // Also send via USB serial if connected
-  if (usbFallback) {
-    serializeJson(doc, Serial);
-    Serial.println();
-  }
+
+  // ALWAYS send via USB Serial (regardless of usbFallback)
+  // This ensures USB-connected PC always gets status updates
+  serializeJson(doc, Serial);
+  Serial.println();
 }
 
 // ============================================================
